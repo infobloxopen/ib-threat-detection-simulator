@@ -15,9 +15,9 @@
 
 # Usage:
 # The script can download from S3 using bucket/key or use a local file
-# Default: bucket="rpz-zones-useast", key="cacheFiles/infoblox-base.json.gz"
-# Command to run with defaults to S3 location (rpz-zones-useast/cacheFiles/infoblox-base.json.gz): python3 index.py
-# Command to run with S3 params (provide bucket name and object key):   python3 index.py rpz-zones-useast cacheFiles/infoblox-base.json.gz
+# Default: bucket="<s3_bucketname>", key="<infoblox_base_json_objectkey>"
+# Command to run with defaults to S3 location (<s3_bucketname>/<object_key>): python3 index.py
+# Command to run with S3 params (provide bucket name and object key):   python3 index.py <s3_bucketname> <infoblox_base_json_objectkey>
 # Command to run with local file:  python3 index.py local infoblox-base.json.gz
 
 import json
@@ -133,8 +133,8 @@ class ThreatFilter:
 def main():
     """Main processing function"""
     # Default S3 parameters
-    default_bucket = "rpz-zones-useast"
-    default_key = "cacheFiles/infoblox-base.json.gz"
+    default_bucket = "<s3_bucketname>"
+    default_key = "<infoblox_base_json_objectkey>"
     
     if len(sys.argv) == 1:
         # No arguments - use defaults
