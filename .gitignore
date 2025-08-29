@@ -1,0 +1,26 @@
+# Output files - processed data
+*.ndjson
+*.csv
+*.json.gz
+
+# Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.venv/
+venv/
+ENV/
+env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
