@@ -51,5 +51,20 @@ Thumbs.db
 ib-base-category.json
 *.json.gz
 
+# Python packages (local installs)
+boto3/
+botocore/
+certifi/
+charset_normalizer/
+dateutil/
+idna/
+jmespath/
+requests/
+s3transfer/
+urllib3/
+six.py
+*dist-info/
+bin/
+
 # Logs
 *.log
