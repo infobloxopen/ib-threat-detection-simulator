@@ -824,7 +824,7 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
                 if header == 'Domain Category':
                     note_row[header] = "NOTE: SIMULATION"
                 elif header == 'Client DNS Query Domain':
-                    note_row[header] = "Simulating file exfiltration so expected domain is one which is TLD"
+                    note_row[header] = "For simulating DNST we are using 1 TLD as input for exfiltration and we get multiple events with same TLD "
                 else:
                     note_row[header] = ""
             writer.writerow(note_row)
@@ -839,7 +839,7 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
         logger.info("="*80)
         logger.info("📊 THREAT DETECTION SIMULATION SUMMARY")
         logger.info("="*80)
-        logger.info("⚠️  NOTE: SIMULATION - Simulating file exfiltration so expected domain is one which is TLD")
+        logger.info("⚠️  NOTE: SIMULATION - For simulating DNST we are using 1 TLD as input for exfiltration and we get multiple events with same TLD ")
         logger.info("="*80)
         logger.info(f"📁 CSV file generated: {output_path}")
         logger.info(f"🎯 Output Format: {output_format.upper()}")
