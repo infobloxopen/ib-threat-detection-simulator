@@ -48,7 +48,6 @@ Thumbs.db
 # Generated/Output files
 *.ndjson
 *.csv
-ib-base-category.json
 *.json.gz
 
 # Python packages (local installs)
