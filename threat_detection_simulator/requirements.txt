@@ -1,0 +1,49 @@
+# Category Analysis - Python Dependencies
+# This file lists all required Python packages for the DNS Category Analysis tool
+
+# Core dependencies for YAML processing and HTTP requests
+PyYAML==6.0.2
+requests==2.32.5
+
+# SSL/TLS certificate handling
+certifi==2025.8.3
+
+# Character encoding detection and normalization  
+charset-normalizer==3.4.3
+
+# Internationalized Domain Names support
+idna==3.10
+
+# URL handling library (dependency of requests)
+urllib3==2.5.0
+
+# Python package management and building tools
+setuptools==65.5.0
+pip==23.2.1
+
+# Additional packages that might be needed on some systems
+wheel>=0.37.0     # For package building
+
+# Development and debugging tools (optional)
+# Uncomment if you need additional debugging capabilities:
+# ipython>=7.16.0
+# pandas>=1.3.0  # For data analysis if needed
+
+# Standard library modules used (no installation required):
+# - os, sys, csv, json, time, random, subprocess, logging
+# - datetime, typing, concurrent.futures, shutil, pathlib
+
+# System Requirements:
+# - Python 3.8 or higher required for typing features and subprocess improvements
+# - Google Cloud CLI (gcloud) must be installed and configured separately
+# - SSH access to GCP VMs must be configured
+# - GCP authentication must be active (gcloud auth login)
+
+# GCP Dependencies:
+# - gcloud CLI must be installed and configured separately
+# - See SETUP.md for GCP setup instructions
+# - Proper IAM permissions for Cloud Logging API access
+
+# Installation Notes:
+# Run: pip install -r requirements.txt
+# Or use the provided run_analysis.sh script which handles all setup automatically
