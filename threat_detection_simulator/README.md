@@ -695,6 +695,7 @@ done
 
 ```bash
 # Production VMs with different analysis depths
+PROJECT_ID="your-project-id"
 PRODUCTION_VMS=(
   "vm-instance-1:zone-a:basic"
   "vm-instance-2:zone-b:advanced"  
@@ -708,20 +709,20 @@ for vm_config in "${PRODUCTION_VMS[@]}"; do
   
   # Copy files
   gcloud compute scp --recurse threat_detection_simulator/ \
-    $vm:~/ --zone=$zone --project=gcp-eng-dns-proc-qa-1 --tunnel-through-iap
+    $vm:~/ --zone=$zone --project=$PROJECT_ID --tunnel-through-iap
   
   # Run mode-specific analysis
   case $mode in
     "debug")
-      gcloud compute ssh $vm --zone=$zone --project=gcp-eng-dns-proc-qa-1 --tunnel-through-iap \
+      gcloud compute ssh $vm --zone=$zone --project=$PROJECT_ID --tunnel-through-iap \
         --command="cd threat_detection_simulator && python3 category_analysis_script.py --mode debug"
       ;;
     "basic") 
-      gcloud compute ssh $vm --zone=$zone --project=gcp-eng-dns-proc-qa-1 --tunnel-through-iap \
+      gcloud compute ssh $vm --zone=$zone --project=$PROJECT_ID --tunnel-through-iap \
         --command="cd threat_detection_simulator && python3 category_analysis_script.py --mode basic --dga-count 25"
       ;;
     "advanced")
-      gcloud compute ssh $vm --zone=$zone --project=gcp-eng-dns-proc-qa-1 --tunnel-through-iap \
+      gcloud compute ssh $vm --zone=$zone --project=$PROJECT_ID --tunnel-through-iap \
         --command="cd threat_detection_simulator && python3 category_analysis_script.py --mode advanced --dga-count 20 --dnst-domain ladytisiphone.com --dnst-ip 8.8.8.8"
       ;;
   esac
@@ -729,7 +730,7 @@ for vm_config in "${PRODUCTION_VMS[@]}"; do
   # Download mode-specific results
   mkdir -p results_${mode}_${vm}_$(date +%Y%m%d)/
   gcloud compute scp --recurse $vm:~/threat_detection_simulator/simulation_output/ \
-    results_${mode}_${vm}_$(date +%Y%m%d)/ --zone=$zone --project=gcp-eng-dns-proc-qa-1 --tunnel-through-iap
+    results_${mode}_${vm}_$(date +%Y%m%d)/ --zone=$zone --project=$PROJECT_ID --tunnel-through-iap
 done
 ```
 
