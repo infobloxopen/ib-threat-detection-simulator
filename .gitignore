@@ -49,6 +49,8 @@ Thumbs.db
 *.ndjson
 *.csv
 *.json.gz
+*.txt
+threat_detection_simulator/*.txt
 
 # Python packages (local installs)
 boto3/
