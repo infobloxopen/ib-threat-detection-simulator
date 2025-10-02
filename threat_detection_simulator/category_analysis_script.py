@@ -108,7 +108,7 @@ DEBUG MODE (--mode debug):
   - No additional domain generation
   - Quick execution for testing and debugging
   - Includes DNS log details in CSV output
-  - CSV includes: "DNS Query in DNS logs" and "Distinct domains in DNS logs"
+  - CSV includes: "DNS Queries Found in Logs" and "Unique Domains in DNS Logs"
 
 BASIC MODE (--mode basic):
   - Processes existing domains from ib-base-category.json
@@ -721,7 +721,7 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
             # Add to global unique domains sets
             all_unique_domains.update(unique_domains_for_category)
             
-            # Calculate detection rate: (Distinct domain Threat Count / Client DNS Query Domains) * 100
+            # Calculate detection rate: (Domains Detected as Threats / Domains Tested) * 100
             # This is more logical than using DNS logs since:
             # 1. DNS logs can miss queries due to timing/network issues
             # 2. We want to know: "Of the domains we tested, what % were detected as threats?"
@@ -753,32 +753,32 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
                 
                 csv_row = {
                     'Domain Category': category,
-                    'Client DNS Query Domain': client_dns_query_domain,
-                    'DNS Query in DNS logs': dns_query_in_dns_logs,
-                    'Distinct domains in DNS logs': distinct_domains_in_dns_logs,
-                    'Total Threat Count': total_threat_count,
-                    'Distinct domain Threat Count': distinct_domain_threat_count,
+                    'Domains Tested': client_dns_query_domain,
+                    'DNS Queries Found in Logs': dns_query_in_dns_logs,
+                    'Unique Domains in DNS Logs': distinct_domains_in_dns_logs,
+                    'Total Alerts Generated': total_threat_count,
+                    'Domains Detected as Threats': distinct_domain_threat_count,
                     'Detection Rate (%)': detection_rate
                 }
             else:
                 # Normal mode: Include threat analysis with detection rates (no DNS log details)
                 csv_row = {
                     'Domain Category': category,
-                    'Client DNS Query Domain': client_dns_query_domain,
-                    'Total Threat Count': total_threat_count,
-                    'Distinct domain Threat Count': distinct_domain_threat_count,
+                    'Domains Tested': client_dns_query_domain,
+                    'Total Alerts Generated': total_threat_count,
+                    'Domains Detected as Threats': distinct_domain_threat_count,
                     'Detection Rate (%)': detection_rate
                 }
             
             csv_data.append(csv_row)
         
         # Add summary row with totals based on output format
-        total_client_dns_queries = sum(row['Client DNS Query Domain'] for row in csv_data)
-        total_threat_counts = sum(row['Total Threat Count'] for row in csv_data)
+        total_client_dns_queries = sum(row['Domains Tested'] for row in csv_data)
+        total_threat_counts = sum(row['Total Alerts Generated'] for row in csv_data)
         total_unique_domains = len(all_unique_domains)
         
         if output_format == 'advanced':
-            total_dns_queries = sum(row['DNS Query in DNS logs'] for row in csv_data)
+            total_dns_queries = sum(row['DNS Queries Found in Logs'] for row in csv_data)
             total_distinct_dns_domains = len(all_unique_dns_domains)
             
             # Calculate overall detection rate using corrected formula for debug mode
@@ -789,11 +789,11 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
             
             total_row = {
                 'Domain Category': 'TOTAL',
-                'Client DNS Query Domain': total_client_dns_queries,
-                'DNS Query in DNS logs': total_dns_queries,
-                'Distinct domains in DNS logs': total_distinct_dns_domains,
-                'Total Threat Count': total_threat_counts,
-                'Distinct domain Threat Count': total_unique_domains,
+                'Domains Tested': total_client_dns_queries,
+                'DNS Queries Found in Logs': total_dns_queries,
+                'Unique Domains in DNS Logs': total_distinct_dns_domains,
+                'Total Alerts Generated': total_threat_counts,
+                'Domains Detected as Threats': total_unique_domains,
                 'Detection Rate (%)': overall_detection_rate
             }
         else:
@@ -805,9 +805,9 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
                 
             total_row = {
                 'Domain Category': 'TOTAL',
-                'Client DNS Query Domain': total_client_dns_queries,
-                'Total Threat Count': total_threat_counts,
-                'Distinct domain Threat Count': total_unique_domains,
+                'Domains Tested': total_client_dns_queries,
+                'Total Alerts Generated': total_threat_counts,
+                'Domains Detected as Threats': total_unique_domains,
                 'Detection Rate (%)': overall_detection_rate
             }
         
@@ -823,7 +823,7 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
             for header in csv_headers:
                 if header == 'Domain Category':
                     note_row[header] = "NOTE: SIMULATION"
-                elif header == 'Client DNS Query Domain':
+                elif header == 'Domains Tested':
                     note_row[header] = "For simulating DNST we are using 1 TLD as input for exfiltration and we get multiple events with same TLD "
                 else:
                     note_row[header] = ""
@@ -849,19 +849,19 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
         for row in csv_data:
             if row['Domain Category'] != 'TOTAL':
                 if output_format == 'advanced':
-                    logger.info(f"   {row['Domain Category']:20} | Client: {row['Client DNS Query Domain']:3} | DNS: {row['DNS Query in DNS logs']:3} | DNS Domains: {row['Distinct domains in DNS logs']:3} | Threats: {row['Total Threat Count']:3} | Threat Domains: {row['Distinct domain Threat Count']:3} | Detection: {row['Detection Rate (%)']:6.2f}%")
+                    logger.info(f"   {row['Domain Category']:20} | Tested: {row['Domains Tested']:3} | DNS: {row['DNS Queries Found in Logs']:3} | DNS Domains: {row['Unique Domains in DNS Logs']:3} | Alerts: {row['Total Alerts Generated']:3} | Detected: {row['Domains Detected as Threats']:3} | Detection: {row['Detection Rate (%)']:6.2f}%")
                 else:
-                    logger.info(f"   {row['Domain Category']:20} | Client: {row['Client DNS Query Domain']:3} | Threats: {row['Total Threat Count']:3} | Threat Domains: {row['Distinct domain Threat Count']:3}")
+                    logger.info(f"   {row['Domain Category']:20} | Tested: {row['Domains Tested']:3} | Alerts: {row['Total Alerts Generated']:3} | Detected: {row['Domains Detected as Threats']:3}")
         
         logger.info("-"*130)
         if output_format == 'advanced':
             total_row = next((row for row in csv_data if row['Domain Category'] == 'TOTAL'), None)
             if total_row:
-                logger.info(f"   {'TOTAL':20} | Client: {total_client_dns_queries:3} | DNS: {total_dns_queries:3} | DNS Domains: {total_distinct_dns_domains:3} | Threats: {total_threat_counts:3} | Threat Domains: {total_unique_domains:3} | Detection: {total_row['Detection Rate (%)']:6.2f}%")
+                logger.info(f"   {'TOTAL':20} | Tested: {total_client_dns_queries:3} | DNS: {total_dns_queries:3} | DNS Domains: {total_distinct_dns_domains:3} | Alerts: {total_threat_counts:3} | Detected: {total_unique_domains:3} | Detection: {total_row['Detection Rate (%)']:6.2f}%")
             else:
-                logger.info(f"   {'TOTAL':20} | Client: {total_client_dns_queries:3} | DNS: {total_dns_queries:3} | DNS Domains: {total_distinct_dns_domains:3} | Threats: {total_threat_counts:3} | Threat Domains: {total_unique_domains:3}")
+                logger.info(f"   {'TOTAL':20} | Tested: {total_client_dns_queries:3} | DNS: {total_dns_queries:3} | DNS Domains: {total_distinct_dns_domains:3} | Alerts: {total_threat_counts:3} | Detected: {total_unique_domains:3}")
         else:
-            logger.info(f"   {'TOTAL':20} | Client: {total_client_dns_queries:3} | Threats: {total_threat_counts:3} | Threat Domains: {total_unique_domains:3}")
+            logger.info(f"   {'TOTAL':20} | Tested: {total_client_dns_queries:3} | Alerts: {total_threat_counts:3} | Detected: {total_unique_domains:3}")
         logger.info("="*80)
         flush_logs()
         

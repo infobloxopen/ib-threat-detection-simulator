@@ -86,7 +86,7 @@ Domain Category,Client DNS Query Domain,Total Threat Count,Distinct domain Threa
 
 ---
 
-#### **Second Parameter - ANALYSIS SCOPE** (Optional, defaults to `advanced`)
+#### **Second Parameter - ANALYSIS SCOPE** (Optional, defaults to `basic`)
 
 Controls which domains are analyzed:
 
@@ -161,14 +161,41 @@ The script supports several optional flags to customize the analysis:
 
 ## Usage Examples
 
-### 📋 Execution Examples
+### 🎯 Quick Start with Presets (Recommended for Sales Team)
+
+The tool now includes easy-to-use presets that combine the most common parameter combinations:
+
+```bash
+# Quick demonstration mode (debug + basic)
+./run.sh demo
+
+# Clean output for customer presentations (normal + basic)
+./run.sh sales
+
+# Comprehensive research analysis (debug + advanced)
+./run.sh research
+
+# Full production simulation (normal + advanced)
+./run.sh production
+```
+
+**Presets can be combined with flags**:
+```bash
+# Sales demo with custom DGA count
+./run.sh demo --dga-count 25
+
+# Production analysis with custom DNST domain
+./run.sh production --dnst-domain client-domain.com
+```
+
+### 📋 Manual Parameter Examples
 
 #### Example 1: Debug Mode with Basic Analysis (Default)
 ```bash
 # Full debug output, existing domains only
 ./run.sh debug basic
 
-# Same as above (basic is default)
+# Same as above (defaults to basic when no scope specified)
 ./run.sh debug
 ```
 **Output**: Complete CSV with all columns, 50 random existing domains per category
@@ -436,8 +463,8 @@ gcloud compute ssh VM_NAME --zone=ZONE --project=PROJECT_ID --tunnel-through-iap
 #### Step 2: Clone Repository and Navigate
 ```bash
 # Clone the repository (if using GitHub deployment)
-git clone https://github.com/infobloxopen/gcp-test.git
-cd gcp-test/threat_detection_simulator/
+git clone https://github.com/infobloxopen/ib-threat-detection-simulator.git
+cd ib-threat-detection-simulator/threat_detection_simulator/
 
 # Or if repository structure is different, adjust path accordingly
 ```
@@ -811,7 +838,36 @@ echo "   📁 Results: results_${MODE}_${timestamp}/"
 
 ### Common Issues and Solutions
 
-#### 1. Domain Mapping Issues
+#### 1. Directory Permission Issues
+```
+❌ Cannot write to simulation_output/ directory
+```
+
+**Cause**: Insufficient permissions to create or write to the output directory.
+
+**The script now includes robust automatic handling**:
+- Automatically tries standard directory creation
+- Falls back to elevated permissions (sudo) if needed
+- Creates alternative directory in user's home folder as final fallback
+- Exports SIMULATION_OUTPUT_DIR environment variable for alternative paths
+
+**Manual Solutions** (if automatic handling fails):
+```bash
+# Check current directory permissions
+ls -la simulation_output/
+
+# Manual permission fix
+sudo chown -R $(whoami):$(id -gn) simulation_output logs
+chmod -R 755 simulation_output logs
+
+# Alternative: Use custom output directory
+export SIMULATION_OUTPUT_DIR="$HOME/threat_analysis_$(date +%Y%m%d_%H%M%S)"
+./run.sh demo
+```
+
+**Note**: The script will automatically display which directory is being used and handle most permission issues without user intervention.
+
+#### 2. Domain Mapping Issues
 ```
 ℹ️ Created 0 domain mappings for threat event correlation
 ```

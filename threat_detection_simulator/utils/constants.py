@@ -45,19 +45,19 @@ OUTPUT_DIR = "output"
 # Debug mode includes DNS query details, Normal mode focuses on threat analysis
 CSV_HEADERS_DEBUG = [
     "Domain Category",
-    "Client DNS Query Domain",
-    "DNS Query in DNS logs",
-    "Distinct domains in DNS logs", 
-    "Total Threat Count",
-    "Distinct domain Threat Count",
+    "Domains Tested",
+    "DNS Queries Found in Logs",
+    "Unique Domains in DNS Logs", 
+    "Total Alerts Generated",
+    "Domains Detected as Threats",
     "Detection Rate (%)"
 ]
 
 CSV_HEADERS_BASIC_ADVANCED = [
     "Domain Category",
-    "Client DNS Query Domain",
-    "Total Threat Count",
-    "Distinct domain Threat Count",
+    "Domains Tested",
+    "Total Alerts Generated",
+    "Domains Detected as Threats",
     "Detection Rate (%)"
 ]
 
