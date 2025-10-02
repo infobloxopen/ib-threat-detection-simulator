@@ -160,100 +160,95 @@ if [ "$SKIP_VENV" != "1" ]; then
     fi
 fi
 
-# Install requirements if packages weren't already installed
-if [ "$SKIP_PACKAGES" != "1" ]; then
-    if $PYTHON_CMD -m pip --version >/dev/null 2>&1; then
-        if [ -f "requirements.txt" ]; then
-            echo "📦 Installing requirements..."
-            if ! $PYTHON_CMD -m pip install -r requirements.txt --quiet 2>/dev/null; then
-                echo "⚠️  Standard pip install failed, trying with --user flag..."
-                if ! $PYTHON_CMD -m pip install -r requirements.txt --user --quiet 2>/dev/null; then
-                    echo "⚠️  --user install also failed. The system may have externally-managed Python (PEP 668)."
-                    echo "    This is normal on newer Linux distributions."
-                    echo "    Attempting system-wide install with --break-system-packages..."
-                    $PYTHON_CMD -m pip install -r requirements.txt --break-system-packages --quiet 2>/dev/null || {
-                        echo "❌ All package installation methods failed. Continuing anyway..."
-                        echo "    The script may still work if packages are already available."
-                    }
-                fi
-            fi
-        else
-            echo "📦 Installing essential packages..."
-            if ! $PYTHON_CMD -m pip install PyYAML requests --quiet 2>/dev/null; then
-                echo "⚠️  Standard pip install failed, trying with --user flag..."
-                if ! $PYTHON_CMD -m pip install PyYAML requests --user --quiet 2>/dev/null; then
-                    echo "⚠️  --user install also failed. The system may have externally-managed Python (PEP 668)."
-                    echo "    This is normal on newer Linux distributions."
-                    echo "    Attempting system-wide install with --break-system-packages..."
-                    $PYTHON_CMD -m pip install PyYAML requests --break-system-packages --quiet 2>/dev/null || {
-                        echo "❌ All package installation methods failed. Continuing anyway..."
-                        echo "    The script may still work if packages are already available."
-                    }
-                fi
-            fi
-        fi
-    else
+# Function to install Python packages with robust fallbacks
+install_python_packages() {
+    if [ "$SKIP_PACKAGES" = "1" ]; then
+        echo "✅ Packages already installed system-wide"
+        return 0
+    fi
+    
+    if ! $PYTHON_CMD -m pip --version >/dev/null 2>&1; then
         echo "⚠️  pip not available, skipping package installation"
+        return 1
     fi
-else
-    echo "✅ Packages already installed system-wide"
-fi
-
-# Create output directories with proper permissions and ownership
-echo "📁 Creating output directories..."
-mkdir -p category_output logs
-
-# Set comprehensive permissions
-chmod 755 category_output logs 2>/dev/null || echo "⚠️  Could not set directory permissions (non-critical)"
-
-# Ensure current user owns the directories
-chown $(whoami):$(id -gn) category_output logs 2>/dev/null || echo "⚠️  Could not change ownership (non-critical)"
-
-# Set write permissions specifically
-chmod u+w category_output logs 2>/dev/null || echo "⚠️  Could not set write permissions (non-critical)"
-
-# Test write permissions
-echo "🔍 Testing directory write permissions..."
-if touch category_output/.write_test 2>/dev/null; then
-    rm category_output/.write_test
-    echo "✅ category_output/ is writable"
-else
-    echo "❌ Cannot write to category_output/ directory"
-    echo "   Attempting to fix permissions..."
     
-    # Try to fix permissions more aggressively
-    sudo mkdir -p category_output logs 2>/dev/null || echo "   Could not create with sudo"
-    sudo chown -R $(whoami):$(id -gn) category_output logs 2>/dev/null || echo "   Could not change ownership with sudo"
-    sudo chmod -R 755 category_output logs 2>/dev/null || echo "   Could not change permissions with sudo"
-    
-    # Test again
-    if touch category_output/.write_test 2>/dev/null; then
-        rm category_output/.write_test
-        echo "✅ Fixed: category_output/ is now writable"
+    local packages=""
+    if [ -f "requirements.txt" ]; then
+        echo "📦 Installing requirements..."
+        packages="-r requirements.txt"
     else
-        echo "⚠️  Still cannot write to category_output/"
-        echo "   Trying alternative output directory..."
-        
-        # Create alternative output directory
-        alt_output_dir="$HOME/category_analysis_output_$(date +%Y%m%d_%H%M%S)"
-        mkdir -p "$alt_output_dir"
-        
-        if [ -w "$alt_output_dir" ]; then
-            echo "✅ Using alternative output directory: $alt_output_dir"
-            ln -sf "$alt_output_dir" category_output 2>/dev/null || {
-                echo "   Creating environment variable for alternative path"
-                export CATEGORY_OUTPUT_DIR="$alt_output_dir"
-            }
-        fi
+        echo "📦 Installing essential packages..."
+        packages="PyYAML requests"
     fi
-fi
+    
+    # Try installation methods in order of preference
+    local methods=("" "--user" "--break-system-packages")
+    local method_names=("standard" "user" "system-wide (--break-system-packages)")
+    
+    for i in "${!methods[@]}"; do
+        local flag="${methods[i]}"
+        local name="${method_names[i]}"
+        
+        if [ "$i" -gt 0 ]; then
+            echo "⚠️  $name installation..."
+        fi
+        
+        if $PYTHON_CMD -m pip install $packages $flag --quiet 2>/dev/null; then
+            echo "✅ Packages installed successfully using $name method"
+            return 0
+        fi
+    done
+    
+    echo "❌ All package installation methods failed. Continuing anyway..."
+    echo "    The script may still work if packages are already available."
+    return 1
+}
 
-# Test logs directory
-if touch logs/.write_test 2>/dev/null; then
-    rm logs/.write_test
-    echo "✅ logs/ is writable"
-else
-    echo "⚠️  Cannot write to logs directory, logging will use alternative location"
+# Install Python packages
+install_python_packages
+
+# Function to create output directories with robust error handling
+create_output_directories() {
+    local output_dir="${1:-simulation_output}"
+    local log_dir="${2:-logs}"
+    
+    echo "📁 Creating output directories..."
+    
+    # Try to create directories
+    if mkdir -p "$output_dir" "$log_dir" 2>/dev/null; then
+        echo "✅ Created directories: $output_dir and $log_dir"
+    else
+        echo "⚠️  Standard mkdir failed, trying with elevated permissions..."
+        sudo mkdir -p "$output_dir" "$log_dir" || {
+            echo "❌ Failed to create directories even with sudo"
+            return 1
+        }
+        sudo chown -R $(whoami):$(id -gn) "$output_dir" "$log_dir" 2>/dev/null || echo "⚠️  Could not change ownership"
+    fi
+    
+    # Test write permissions
+    if touch "$output_dir/.write_test" 2>/dev/null; then
+        rm "$output_dir/.write_test"
+        echo "✅ $output_dir is writable"
+    else
+        echo "❌ Cannot write to $output_dir directory"
+        echo "   Creating alternative output directory..."
+        alt_output_dir="$HOME/simulation_output_$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "$alt_output_dir" || {
+            echo "❌ Failed to create alternative directory"
+            return 1
+        }
+        echo "✅ Using alternative output directory: $alt_output_dir"
+        export SIMULATION_OUTPUT_DIR="$alt_output_dir"
+    fi
+    
+    return 0
+}
+
+# Create output directories
+if ! create_output_directories; then
+    echo "❌ Failed to set up output directories"
+    exit 1
 fi
 
 # Set environment variables
@@ -279,12 +274,19 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo ""
     echo "USAGE:"
     echo "  ./run.sh <OUTPUT_FORMAT> [ANALYSIS_SCOPE] [FLAGS]"
+    echo "  ./run.sh <PRESET> [FLAGS]"
+    echo ""
+    echo "PRESETS (Easy-to-use combinations):"
+    echo "  demo        Quick demonstration (debug + basic)"
+    echo "  sales       Customer presentations (normal + basic)"
+    echo "  research    Comprehensive analysis (debug + advanced)"
+    echo "  production  Full simulation (normal + advanced)"
     echo ""
     echo "OUTPUT FORMATS (Required):"
     echo "  debug     All columns including DNS query details and Detection Rate (%)"
     echo "  normal    Streamlined CSV with only threat-related columns"
     echo ""
-    echo "ANALYSIS SCOPES (Optional, defaults to 'advanced'):"
+    echo "ANALYSIS SCOPES (Optional, defaults to 'basic'):"
     echo "  basic     Existing domains only (7,057 cleaned threat domains)"
     echo "  advanced  Existing + DGA domains + DNST simulation (comprehensive)"
     echo ""
@@ -295,20 +297,19 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "  --help, -h               Show this help message"
     echo ""
     echo "EXAMPLES:"
-    echo "  # Quick validation with Detection Rate column"
-    echo "  ./run.sh debug basic"
+    echo "  # Using presets (recommended for sales team)"
+    echo "  ./run.sh demo"
+    echo "  ./run.sh sales"
+    echo "  ./run.sh research"
+    echo "  ./run.sh production"
     echo ""
-    echo "  # Production analysis with comprehensive threat simulation"
+    echo "  # Manual parameter combinations"
+    echo "  ./run.sh debug basic"
     echo "  ./run.sh normal advanced"
     echo ""
-    echo "  # Custom DGA count with flag"
-    echo "  ./run.sh debug advanced --dga-count 25"
-    echo ""
-    echo "  # Custom DNST domain with flag"
-    echo "  ./run.sh normal advanced --dnst-domain geoffsmith.org"
-    echo ""
-    echo "  # Combined custom settings"
-    echo "  ./run.sh debug advanced --dga-count 20 --dnst-domain custom.com"
+    echo "  # With custom flags"
+    echo "  ./run.sh demo --dga-count 25"
+    echo "  ./run.sh sales --dnst-domain custom.com"
     echo ""
     echo "KEY FEATURES:"
     echo "  🎯 Whitelist-cleaned threat categories (943 conflicting domains removed)"
@@ -318,10 +319,10 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "  ⚡ Dynamic VM detection and zero-configuration deployment"
     echo ""
     echo "OUTPUT FILES:"
-    echo "  category_output/category_analysis.csv       - Summary statistics with detection rates"
-    echo "  category_output/threat_event_*.json         - Per-category threat detection logs"
-    echo "  category_output/dns_logs_*.json            - Per-category DNS query logs (debug mode)"
-    echo "  category_output/non_detected_domains_*.json - Per-category non-detected domains analysis"
+    echo "  simulation_output/threat_detection_results.csv       - Summary statistics with detection rates"
+    echo "  simulation_output/threat_event_*.json         - Per-category threat detection logs"
+    echo "  simulation_output/dns_logs_*.json            - Per-category DNS query logs (debug mode)"
+    echo "  simulation_output/non_detected_domains_*.json - Per-category non-detected domains analysis"
     echo "  logs/sales_demo.log                        - Detailed execution logs"
     echo ""
     echo "REQUIREMENTS:"
@@ -335,7 +336,180 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     exit 0
 fi
 
-if [ $# -gt 0 ]; then
+# Handle preset aliases for easy sales/demo use
+case "$1" in
+    "demo")
+        echo "🎯 Using DEMO preset: debug mode with basic analysis"
+        echo "   Perfect for quick demonstrations and validation"
+        OUTPUT_FORMAT="debug"
+        ANALYSIS_SCOPE="basic"
+        REMAINING_ARGS="${@:2}"  # Pass remaining arguments
+        shift
+        ;;
+    "sales")
+        echo "💼 Using SALES preset: normal mode with basic analysis"
+        echo "   Clean output ideal for customer presentations"
+        OUTPUT_FORMAT="normal"
+        ANALYSIS_SCOPE="basic"
+        REMAINING_ARGS="${@:2}"  # Pass remaining arguments
+        shift
+        ;;
+    "research")
+        echo "🔬 Using RESEARCH preset: debug mode with advanced analysis"
+        echo "   Comprehensive analysis with all data points"
+        OUTPUT_FORMAT="debug"
+        ANALYSIS_SCOPE="advanced"
+        REMAINING_ARGS="${@:2}"  # Pass remaining arguments
+        shift
+        ;;
+    "production")
+        echo "🏭 Using PRODUCTION preset: normal mode with advanced analysis"
+        echo "   Full threat simulation with clean CSV output"
+        OUTPUT_FORMAT="normal"
+        ANALYSIS_SCOPE="advanced"
+        REMAINING_ARGS="${@:2}"  # Pass remaining arguments
+        shift
+        ;;
+    *)
+        # Not a preset, continue with normal parameter parsing
+        ;;
+esac
+
+# Function to validate parameters and provide helpful feedback
+validate_parameters() {
+    local output_format="$1"
+    local analysis_scope="$2"
+    local remaining_args="$3"
+    
+    # Validate output format
+    if [ -z "$output_format" ]; then
+        echo "❌ Missing required OUTPUT_FORMAT parameter"
+        echo ""
+        echo "Usage: ./run.sh <OUTPUT_FORMAT> [ANALYSIS_SCOPE] [FLAGS]"
+        echo ""
+        echo "Valid OUTPUT_FORMAT values:"
+        echo "  debug   - All columns including DNS query details and Detection Rate (%)"
+        echo "  normal  - Streamlined CSV with only threat-related columns"
+        echo ""
+        echo "Example: ./run.sh debug basic"
+        echo ""
+        echo "For full help, run: ./run.sh --help"
+        return 1
+    fi
+    
+    case "$output_format" in
+        "debug"|"normal")
+            # Valid
+            ;;
+        *)
+            echo "❌ Invalid OUTPUT_FORMAT: '$output_format'"
+            echo ""
+            echo "Valid OUTPUT_FORMAT values:"
+            echo "  debug   - All columns including DNS query details and Detection Rate (%)"
+            echo "  normal  - Streamlined CSV with only threat-related columns"
+            echo ""
+            echo "You provided: '$output_format'"
+            echo ""
+            echo "Example: ./run.sh debug basic"
+            echo "For full help, run: ./run.sh --help"
+            return 1
+            ;;
+    esac
+    
+    # Validate analysis scope
+    case "$analysis_scope" in
+        "basic"|"advanced")
+            # Valid
+            ;;
+        *)
+            echo "❌ Invalid ANALYSIS_SCOPE: '$analysis_scope'"
+            echo ""
+            echo "Valid ANALYSIS_SCOPE values:"
+            echo "  basic     - Existing domains only (7,057 cleaned threat domains)"
+            echo "  advanced  - Existing + DGA domains + DNST simulation (comprehensive)"
+            echo ""
+            echo "You provided: '$analysis_scope'"
+            echo ""
+            echo "Example: ./run.sh debug basic"
+            echo "For full help, run: ./run.sh --help"
+            return 1
+            ;;
+    esac
+    
+    # Validate optional flags
+    local args_array=($remaining_args)
+    local i=0
+    while [ $i -lt ${#args_array[@]} ]; do
+        local flag="${args_array[i]}"
+        case "$flag" in
+            "--dga-count")
+                i=$((i + 1))
+                if [ $i -ge ${#args_array[@]} ]; then
+                    echo "❌ --dga-count flag requires a number argument"
+                    echo "Example: --dga-count 25"
+                    return 1
+                fi
+                local count="${args_array[i]}"
+                if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -lt 1 ] || [ "$count" -gt 100 ]; then
+                    echo "❌ --dga-count must be a number between 1 and 100"
+                    echo "You provided: '$count'"
+                    return 1
+                fi
+                ;;
+            "--dnst-domain")
+                i=$((i + 1))
+                if [ $i -ge ${#args_array[@]} ]; then
+                    echo "❌ --dnst-domain flag requires a domain argument"
+                    echo "Example: --dnst-domain example.com"
+                    return 1
+                fi
+                local domain="${args_array[i]}"
+                if ! [[ "$domain" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                    echo "❌ --dnst-domain must be a valid domain name"
+                    echo "You provided: '$domain'"
+                    echo "Example: --dnst-domain example.com"
+                    return 1
+                fi
+                ;;
+            "--dnst-ip")
+                i=$((i + 1))
+                if [ $i -ge ${#args_array[@]} ]; then
+                    echo "❌ --dnst-ip flag requires an IP address argument"
+                    echo "Example: --dnst-ip 8.8.8.8"
+                    return 1
+                fi
+                local ip="${args_array[i]}"
+                if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+                    echo "❌ --dnst-ip must be a valid IPv4 address"
+                    echo "You provided: '$ip'"
+                    echo "Example: --dnst-ip 8.8.8.8"
+                    return 1
+                fi
+                ;;
+            "--help"|"-h")
+                # Help flag is valid but should have been handled earlier
+                echo "ℹ️  Help flag detected with preset. Use './run.sh --help' for full documentation."
+                ;;
+            "--"*)
+                echo "❌ Unknown flag: '$flag'"
+                echo ""
+                echo "Valid flags:"
+                echo "  --dga-count <number>   - Number of DGA domains (1-100)"
+                echo "  --dnst-domain <domain> - Domain for DNST simulation"
+                echo "  --dnst-ip <ip>        - IP address for DNST queries"
+                echo ""
+                echo "For full help, run: ./run.sh --help"
+                return 1
+                ;;
+        esac
+        i=$((i + 1))
+    done
+    
+    return 0
+}
+
+# Handle normal parameter parsing only if presets weren't used
+if [ -z "$OUTPUT_FORMAT" ] && [ $# -gt 0 ]; then
     # First parameter: output format
     case "$1" in
         "debug"|"normal")
@@ -345,6 +519,8 @@ if [ $# -gt 0 ]; then
         *)
             echo "❌ Invalid output format: $1"
             echo "   Valid formats: debug, normal"
+            echo "   Or use presets: demo, sales, research, production"
+            echo "   For full help, run: ./run.sh --help"
             exit 1
             ;;
     esac
@@ -356,21 +532,33 @@ if [ $# -gt 0 ]; then
                 ANALYSIS_SCOPE="$1"
                 shift
                 ;;
+            "--"*)
+                # Flag found, use default scope
+                ANALYSIS_SCOPE="basic"  # Default changed to basic per manager feedback
+                ;;
             *)
-                # Not an analysis scope, treat as remaining argument
-                ANALYSIS_SCOPE="advanced"  # Default analysis scope
+                echo "❌ Invalid analysis scope: $1"
+                echo "   Valid scopes: basic, advanced"
+                echo "   For full help, run: ./run.sh --help"
+                exit 1
                 ;;
         esac
     else
-        ANALYSIS_SCOPE="advanced"  # Default analysis scope
+        ANALYSIS_SCOPE="basic"  # Default changed to basic per manager feedback
     fi
     
     # Collect remaining arguments
     REMAINING_ARGS="$*"
-else
+elif [ -z "$OUTPUT_FORMAT" ]; then
     # No arguments provided - use defaults
     OUTPUT_FORMAT="debug"
     ANALYSIS_SCOPE="basic"
+    REMAINING_ARGS=""
+fi
+
+# Validate all parameters
+if ! validate_parameters "$OUTPUT_FORMAT" "$ANALYSIS_SCOPE" "$REMAINING_ARGS"; then
+    exit 1
 fi
 
 echo "📝 Output Format: $OUTPUT_FORMAT"
@@ -464,12 +652,12 @@ echo ""
 # Show generated files with enhanced output location handling
 echo "📊 Checking for generated output files..."
 
-# Check main category_output directory
-if [ -d "category_output" ] && [ "$(ls -A category_output 2>/dev/null)" ]; then
-    echo "📁 Generated files in category_output/:"
-    ls -la category_output/
-    echo "✅ Output location: $(pwd)/category_output/"
-elif [ -n "$CATEGORY_OUTPUT_DIR" ] && [ -d "$CATEGORY_OUTPUT_DIR" ] && [ "$(ls -A "$CATEGORY_OUTPUT_DIR" 2>/dev/null)" ]; then
+# Check main simulation_output directory
+if [ -d "simulation_output" ] && [ "$(ls -A simulation_output 2>/dev/null)" ]; then
+    echo "📁 Generated files in simulation_output/:"
+    ls -la simulation_output/
+    echo "✅ Output location: $(pwd)/simulation_output/"
+elif [ -n "$SIMULATION_OUTPUT_DIR" ] && [ -d "$SIMULATION_OUTPUT_DIR" ] && [ "$(ls -A "$SIMULATION_OUTPUT_DIR" 2>/dev/null)" ]; then
     echo "📁 Generated files in alternative directory:"
     ls -la "$CATEGORY_OUTPUT_DIR/"
     echo "✅ Output location: $CATEGORY_OUTPUT_DIR"
@@ -511,10 +699,10 @@ if [ $SCRIPT_EXIT_CODE -eq 0 ]; then
     
     # Find the actual output directory used
     actual_output=""
-    if [ -d "category_output" ] && [ "$(ls -A category_output 2>/dev/null)" ]; then
-        actual_output="$(pwd)/category_output/"
-    elif [ -n "$CATEGORY_OUTPUT_DIR" ] && [ -d "$CATEGORY_OUTPUT_DIR" ]; then
-        actual_output="$CATEGORY_OUTPUT_DIR"
+    if [ -d "simulation_output" ] && [ "$(ls -A simulation_output 2>/dev/null)" ]; then
+        actual_output="$(pwd)/simulation_output/"
+    elif [ -n "$SIMULATION_OUTPUT_DIR" ] && [ -d "$SIMULATION_OUTPUT_DIR" ]; then
+        actual_output="$SIMULATION_OUTPUT_DIR"
     else
         latest_dir=$(find ~ -maxdepth 1 -name "category_analysis_output_*" -type d 2>/dev/null | sort | tail -n 1)
         if [ -n "$latest_dir" ] && [ -d "$latest_dir" ]; then

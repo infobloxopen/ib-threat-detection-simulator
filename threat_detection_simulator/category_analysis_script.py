@@ -61,7 +61,7 @@ logger = get_logger(__name__)
 # Category-based constants
 CATEGORY_INDICATORS_FILE = "ib-base-category.json"
 CATEGORY_OUTPUT_CSV_FILE = "threat_detection_results.csv"
-CATEGORY_OUTPUT_DIR = "simulation_output"
+SIMULATION_OUTPUT_DIR = "simulation_output"
 
 # Domain sampling configuration
 MAX_DOMAINS_PER_CATEGORY = 50   # Reduced to 50 domains per category for better accuracy
@@ -665,7 +665,7 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
     """
     try:
         # Check for alternative output directory from environment
-        alt_output_dir = os.environ.get('CATEGORY_OUTPUT_DIR')
+        alt_output_dir = os.environ.get('SIMULATION_OUTPUT_DIR')
         if alt_output_dir and os.path.exists(alt_output_dir) and os.access(alt_output_dir, os.W_OK):
             output_dir = alt_output_dir
             logger.info(f"📁 Using alternative output directory: {output_dir}")
@@ -887,7 +887,7 @@ def generate_category_json_files(query_results: List[Dict], log_results: List[Di
     """
     try:
         # Check for alternative output directory from environment
-        alt_output_dir = os.environ.get('CATEGORY_OUTPUT_DIR')
+        alt_output_dir = os.environ.get('SIMULATION_OUTPUT_DIR')
         if alt_output_dir and os.path.exists(alt_output_dir) and os.access(alt_output_dir, os.W_OK):
             output_dir = alt_output_dir
             logger.info(f"📁 Using alternative output directory: {output_dir}")
@@ -1303,7 +1303,7 @@ def main():
         logger.info("="*60)
         flush_logs()
         
-        output_dir = os.path.join(os.path.dirname(__file__), CATEGORY_OUTPUT_DIR)
+        output_dir = os.path.join(os.path.dirname(__file__), SIMULATION_OUTPUT_DIR)
         generate_category_csv(query_results, log_results, output_dir, args.output_format)
         generate_category_json_files(query_results, log_results, output_dir)
         

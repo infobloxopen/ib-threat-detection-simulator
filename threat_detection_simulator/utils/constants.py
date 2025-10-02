@@ -66,5 +66,5 @@ CSV_HEADERS = CSV_HEADERS_DEBUG
 
 # Indicator file configuration
 INDICATORS_FILE = "sorted_infoblox-base_indicators.ndjson"
-GCP_TEST_REPO = "https://github.com/infobloxopen/gcp-test.git"
+GCP_TEST_REPO = "https://github.com/infobloxopen/ib-threat-detection-simulator.git"
 INDICATORS_REMOTE_PATH = "sorted_infoblox-base_indicators.ndjson"
