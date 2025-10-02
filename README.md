@@ -20,22 +20,13 @@ threat_detection_simulator/
     └── threat_categories.py
 ```
 
-## Running Modes and Presets
+## Running Modes and Parameters
 
-### 🎯 Available Presets (Recommended)
+### 🔧 Available Parameter Combinations
 
-The tool includes easy-to-use presets that combine the most common parameter combinations:
+The tool uses a **two-parameter system** for flexible execution:
 
-| Preset | Command | Description | Output Format | Analysis Scope | Best For |
-|:------:|:-------:|:------------|:-------------:|:--------------:|:---------|
-| **Demo** | `./run.sh demo` | Quick demonstration mode | Debug (all columns) | Basic (existing domains) | Quick validation, troubleshooting |
-| **Sales** | `./run.sh sales` | Clean output for presentations | Normal (streamlined) | Basic (existing domains) | Customer demos, executive reports |
-| **Research** | `./run.sh research` | Comprehensive analysis with details | Debug (all columns) | Advanced (existing + DGA + DNST) | Security research, detailed investigation |
-| **Production** | `./run.sh production` | Full simulation with clean output | Normal (streamlined) | Advanced (existing + DGA + DNST) | Production testing, final reports |
-
-### 🔧 Manual Parameter Combinations
-
-For advanced users who need custom configurations:
+**Usage**: `./run.sh <OUTPUT_FORMAT> [ANALYSIS_SCOPE] [FLAGS]`
 
 | Output Format | Analysis Scope | Command | CSV Columns | Domain Types | Execution Time |
 |:-------------:|:--------------:|:--------|:-----------:|:------------:|:--------------:|
@@ -70,48 +61,38 @@ For advanced users who need custom configurations:
 - **Features**: Real malware patterns, domain mapping, data exfiltration simulation
 - **Best For**: Comprehensive testing, security research
 
-### 💡 Usage Examples with Explanations
+### 💡 Usage Examples
 
 ```bash
-# Quick demonstration (recommended for first-time users)
-./run.sh demo
-# → Debug output format + Basic scope
-# → Shows all CSV columns for learning purposes
-# → Uses only existing threat domains (fastest execution)
+# Quick validation with full debug info
+./run.sh debug basic
 
-# Sales presentation (recommended for customer demos)
-./run.sh sales  
-# → Normal output format + Basic scope
-# → Clean CSV output perfect for presentations
-# → Focuses on threat detection metrics
+# Detailed security research with comprehensive analysis
+./run.sh debug advanced
 
-# Security research (recommended for detailed analysis)
-./run.sh research
-# → Debug output format + Advanced scope  
-# → All CSV columns + comprehensive domain analysis
-# → Includes real malware patterns and DNS tunneling
+# Clean output for reporting (existing domains only)
+./run.sh normal basic
 
-# Production testing (recommended for final validation)
-./run.sh production
-# → Normal output format + Advanced scope
-# → Clean output + comprehensive threat simulation
-# → Best balance of detail and presentation quality
+# Production testing with comprehensive threat simulation
+./run.sh normal advanced
 ```
 
 ### 🔧 Custom Flags (Available with All Modes)
 
-All presets and manual combinations support additional flags:
+All parameter combinations support additional flags:
 
 ```bash
-# Presets with custom flags
-./run.sh demo --dga-count 25
-./run.sh sales --dnst-domain custom.example.com
-./run.sh research --dga-count 20 --dnst-domain research.domain.com
-./run.sh production --dga-count 15 --dnst-ip 1.1.1.1
+# Custom DGA domain count
+./run.sh debug advanced --dga-count 25
 
-# Manual combinations with custom flags
-./run.sh debug advanced --dga-count 30 --dnst-domain test.example.com
-./run.sh normal basic --help
+# Custom DNST domain
+./run.sh normal advanced --dnst-domain custom.example.com
+
+# Multiple custom flags
+./run.sh debug advanced --dga-count 20 --dnst-domain research.domain.com
+
+# Get help
+./run.sh --help
 ```
 
 ## Key Features
@@ -255,33 +236,6 @@ The script supports several optional flags to customize the analysis:
 
 ## Usage Examples
 
-### 🎯 Quick Start with Presets (Recommended for Sales Team)
-
-The tool now includes easy-to-use presets that combine the most common parameter combinations:
-
-```bash
-# Quick demonstration mode (debug + basic)
-./run.sh demo
-
-# Clean output for customer presentations (normal + basic)
-./run.sh sales
-
-# Comprehensive research analysis (debug + advanced)
-./run.sh research
-
-# Full production simulation (normal + advanced)
-./run.sh production
-```
-
-**Presets can be combined with flags**:
-```bash
-# Sales demo with custom DGA count
-./run.sh demo --dga-count 25
-
-# Production analysis with custom DNST domain
-./run.sh production --dnst-domain client-domain.com
-```
-
 ### 📋 Manual Parameter Examples
 
 #### Example 1: Debug Mode with Basic Analysis (Default)
@@ -346,11 +300,11 @@ The tool now includes easy-to-use presets that combine the most common parameter
 # Quick validation with full debug info (includes Detection Rate column)
 ./run.sh debug basic
 
-# Production analysis with clean output and detection rates
+# Comprehensive analysis with clean output and detection rates
 ./run.sh normal advanced
 
-# Comprehensive security research with custom settings
-./run.sh debug advanced --dga-count 20 --dnst-domain geoffsmith.org
+# Detailed security research with custom settings
+./run.sh debug advanced --dga-count 20 --dnst-domain custom.example.com
 
 # Advanced analysis with custom DGA count only
 ./run.sh normal advanced --dga-count 25
