@@ -20,6 +20,100 @@ threat_detection_simulator/
     └── threat_categories.py
 ```
 
+## Running Modes and Presets
+
+### 🎯 Available Presets (Recommended)
+
+The tool includes easy-to-use presets that combine the most common parameter combinations:
+
+| Preset | Command | Description | Output Format | Analysis Scope | Best For |
+|:------:|:-------:|:------------|:-------------:|:--------------:|:---------|
+| **Demo** | `./run.sh demo` | Quick demonstration mode | Debug (all columns) | Basic (existing domains) | Quick validation, troubleshooting |
+| **Sales** | `./run.sh sales` | Clean output for presentations | Normal (streamlined) | Basic (existing domains) | Customer demos, executive reports |
+| **Research** | `./run.sh research` | Comprehensive analysis with details | Debug (all columns) | Advanced (existing + DGA + DNST) | Security research, detailed investigation |
+| **Production** | `./run.sh production` | Full simulation with clean output | Normal (streamlined) | Advanced (existing + DGA + DNST) | Production testing, final reports |
+
+### 🔧 Manual Parameter Combinations
+
+For advanced users who need custom configurations:
+
+| Output Format | Analysis Scope | Command | CSV Columns | Domain Types | Execution Time |
+|:-------------:|:--------------:|:--------|:-----------:|:------------:|:--------------:|
+| `debug` | `basic` | `./run.sh debug basic` | All columns with DNS details | Existing only (50 per category) | ~5-10 minutes |
+| `debug` | `advanced` | `./run.sh debug advanced` | All columns with DNS details | Existing + DGA + DNST | ~15-25 minutes |
+| `normal` | `basic` | `./run.sh normal basic` | Threat columns only | Existing only (50 per category) | ~5-10 minutes |
+| `normal` | `advanced` | `./run.sh normal advanced` | Threat columns only | Existing + DGA + DNST | ~15-25 minutes |
+
+### 📊 Output Format Details
+
+#### Debug Format (`debug`)
+- **CSV Columns**: All available columns including DNS query details
+- **Use Case**: Detailed analysis, troubleshooting, research
+- **Sample Columns**: `Domain Category`, `Domains Tested`, `DNS Queries Found in Logs`, `Unique Domains in DNS Logs`, `Total Alerts Generated`, `Domains Detected as Threats`, `Detection Rate (%)`
+
+#### Normal Format (`normal`)  
+- **CSV Columns**: Essential threat detection information only
+- **Use Case**: Clean reports, executive summaries, production use
+- **Sample Columns**: `Domain Category`, `Domains Tested`, `Total Alerts Generated`, `Domains Detected as Threats`, `Detection Rate (%)`
+
+### 🎯 Analysis Scope Details
+
+#### Basic Scope (`basic`)
+- **Domains**: Only existing domains from `ib-base-category.json`
+- **Categories**: Standard threat categories (Phishing, Malware, C&C, etc.)
+- **Count**: 50 random domains per category
+- **Best For**: Baseline validation, quick testing
+
+#### Advanced Scope (`advanced`)
+- **Domains**: Existing + Real DGA domains + DNS Tunneling simulation
+- **Categories**: Standard + DGA_Malware + DNST_Tunneling
+- **Features**: Real malware patterns, domain mapping, data exfiltration simulation
+- **Best For**: Comprehensive testing, security research
+
+### 💡 Usage Examples with Explanations
+
+```bash
+# Quick demonstration (recommended for first-time users)
+./run.sh demo
+# → Debug output format + Basic scope
+# → Shows all CSV columns for learning purposes
+# → Uses only existing threat domains (fastest execution)
+
+# Sales presentation (recommended for customer demos)
+./run.sh sales  
+# → Normal output format + Basic scope
+# → Clean CSV output perfect for presentations
+# → Focuses on threat detection metrics
+
+# Security research (recommended for detailed analysis)
+./run.sh research
+# → Debug output format + Advanced scope  
+# → All CSV columns + comprehensive domain analysis
+# → Includes real malware patterns and DNS tunneling
+
+# Production testing (recommended for final validation)
+./run.sh production
+# → Normal output format + Advanced scope
+# → Clean output + comprehensive threat simulation
+# → Best balance of detail and presentation quality
+```
+
+### 🔧 Custom Flags (Available with All Modes)
+
+All presets and manual combinations support additional flags:
+
+```bash
+# Presets with custom flags
+./run.sh demo --dga-count 25
+./run.sh sales --dnst-domain custom.example.com
+./run.sh research --dga-count 20 --dnst-domain research.domain.com
+./run.sh production --dga-count 15 --dnst-ip 1.1.1.1
+
+# Manual combinations with custom flags
+./run.sh debug advanced --dga-count 30 --dnst-domain test.example.com
+./run.sh normal basic --help
+```
+
 ## Key Features
 
 1. **🎯 Advanced Domain Mapping**: Accurate threat correlation for DGA Mylobot domains (handles first 3 character removal in threat events)
