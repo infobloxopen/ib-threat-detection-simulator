@@ -20,6 +20,135 @@ threat_detection_simulator/
     └── threat_categories.py
 ```
 
+## TTL-Based Domain Caching System
+
+### 🕐 DNS Cache Prevention with TTL
+
+To ensure accurate threat detection metrics, the tool implements a **TTL-based domain caching system** that prevents DNS cache hits from skewing detection rates.
+
+#### **The Problem**
+When running the same domains multiple times within the DNS TTL period (typically 300 seconds), subsequent `dig` commands return cached results without generating new GCP DNS logs. This leads to:
+- **Artificially high detection rates** on repeated runs
+- **Inaccurate metrics** due to missing DNS query logs  
+- **Inconsistent results** between fresh runs and cached runs
+
+#### **The Solution**
+The tool now tracks domain usage with Unix timestamps and automatically filters recently used domains:
+
+```bash
+# Use default TTL (300 seconds = 5 minutes)
+./run.sh debug basic
+
+# Use custom TTL for testing (30 seconds)
+./run.sh debug basic --ttl 30
+
+# Use longer TTL for production (1 hour)
+./run.sh normal advanced --ttl 3600
+```
+
+#### **How It Works**
+1. **Domain Tracking**: Each domain in `ib-base-category.json` has a `last_usage_date_time` timestamp
+2. **Smart Filtering**: Domains used within the TTL period are automatically excluded from selection
+3. **Fresh Queries**: Only "fresh" domains (unused within TTL) are queried, ensuring new DNS logs
+4. **Automatic Updates**: After DNS queries complete, timestamps are updated to prevent immediate reuse
+
+#### **TTL Configuration**
+- **Default**: 300 seconds (5 minutes) - balances cache avoidance with domain availability
+- **Testing**: 30-60 seconds - for rapid testing cycles
+- **Production**: 3600+ seconds (1+ hour) - for maximum cache avoidance in production environments
+
+#### **TTL Statistics**
+The tool provides detailed statistics about domain filtering:
+```
+📊 Domain Sampling Summary:
+   Original total domains: 4000
+   Filtered by TTL: 12
+   Available after TTL: 3988
+   Sampled total domains: 400
+   TTL reduction: 0.3%
+   Total reduction: 90.0%
+```
+
+This ensures that every run generates fresh DNS queries and produces accurate, reliable detection rate measurements.
+
+## Running Modes and Parameters
+
+### 🔧 Available Parameter Combinations
+
+The tool uses a **two-parameter system** for flexible execution:
+
+**Usage**: `./run.sh <OUTPUT_FORMAT> [ANALYSIS_SCOPE] [FLAGS]`
+
+| Output Format | Analysis Scope | Command | CSV Columns | Domain Types | Execution Time |
+|:-------------:|:--------------:|:--------|:-----------:|:------------:|:--------------:|
+| `debug` | `basic` | `./run.sh debug basic` | All columns with DNS details | Existing only (50 per category) | ~5-10 minutes |
+| `debug` | `advanced` | `./run.sh debug advanced` | All columns with DNS details | Existing + DGA + DNST | ~15-25 minutes |
+| `normal` | `basic` | `./run.sh normal basic` | Threat columns only | Existing only (50 per category) | ~5-10 minutes |
+| `normal` | `advanced` | `./run.sh normal advanced` | Threat columns only | Existing + DGA + DNST | ~15-25 minutes |
+
+### 📊 Output Format Details
+
+#### Debug Format (`debug`)
+- **CSV Columns**: All available columns including DNS query details
+- **Use Case**: Detailed analysis, troubleshooting, research
+- **Sample Columns**: `Domain Category`, `Domains Tested`, `DNS Queries Found in Logs`, `Unique Domains in DNS Logs`, `Total Alerts Generated`, `Domains Detected as Threats`, `Detection Rate (%)`
+
+#### Normal Format (`normal`)  
+- **CSV Columns**: Essential threat detection information only
+- **Use Case**: Clean reports, executive summaries, production use
+- **Sample Columns**: `Domain Category`, `Domains Tested`, `Total Alerts Generated`, `Domains Detected as Threats`, `Detection Rate (%)`
+
+### 🎯 Analysis Scope Details
+
+#### Basic Scope (`basic`)
+- **Domains**: Only existing domains from `ib-base-category.json`
+- **Categories**: Standard threat categories (Phishing, Malware, C&C, etc.)
+- **Count**: 50 random domains per category
+- **Best For**: Baseline validation, quick testing
+
+#### Advanced Scope (`advanced`)
+- **Domains**: Existing + Real DGA domains + DNS Tunneling simulation
+- **Categories**: Standard + DGA_Malware + DNST_Tunneling
+- **Features**: Real malware patterns, domain mapping, data exfiltration simulation
+- **Best For**: Comprehensive testing, security research
+
+### 💡 Usage Examples
+
+```bash
+# Quick validation with full debug info
+./run.sh debug basic
+
+# Detailed security research with comprehensive analysis
+./run.sh debug advanced
+
+# Clean output for reporting (existing domains only)
+./run.sh normal basic
+
+# Production testing with comprehensive threat simulation
+./run.sh normal advanced
+```
+
+### 🔧 Custom Flags (Available with All Modes)
+
+All parameter combinations support additional flags:
+
+```bash
+# Custom DGA domain count
+./run.sh debug advanced --dga-count 25
+
+# Custom DNST domain
+./run.sh normal advanced --dnst-domain custom.example.com
+
+# Custom TTL to prevent DNS cache hits
+./run.sh debug basic --ttl 600
+
+# Multiple custom flags
+./run.sh debug advanced --dga-count 20 --dnst-domain research.domain.com --ttl 300
+
+# Get help
+./run.sh --help
+```
+
 ## Key Features
 
 1. **🎯 Advanced Domain Mapping**: Accurate threat correlation for DGA Mylobot domains (handles first 3 character removal in threat events)
@@ -86,7 +215,7 @@ Domain Category,Client DNS Query Domain,Total Threat Count,Distinct domain Threa
 
 ---
 
-#### **Second Parameter - ANALYSIS SCOPE** (Optional, defaults to `advanced`)
+#### **Second Parameter - ANALYSIS SCOPE** (Optional, defaults to `basic`)
 
 Controls which domains are analyzed:
 
@@ -152,6 +281,13 @@ The script supports several optional flags to customize the analysis:
 **Usage**: `./run.sh debug advanced --dnst-ip 1.1.1.1`  
 **Details**: Target IP address for DNS tunneling simulation queries
 
+### 🕐 `--ttl <seconds>`
+**Purpose**: Control domain reuse prevention with TTL-based caching
+
+**Default**: 300 seconds (5 minutes)  
+**Usage**: `./run.sh debug basic --ttl 600`  
+**Details**: Domains used within this time period are filtered out to prevent DNS cache hits and ensure accurate detection rates. Use smaller values (30-60s) for testing, larger values (3600s+) for production.
+
 ### ❓ `--help` or `-h`
 **Purpose**: Display comprehensive usage information and examples
 
@@ -161,14 +297,14 @@ The script supports several optional flags to customize the analysis:
 
 ## Usage Examples
 
-### 📋 Execution Examples
+### 📋 Manual Parameter Examples
 
 #### Example 1: Debug Mode with Basic Analysis (Default)
 ```bash
 # Full debug output, existing domains only
 ./run.sh debug basic
 
-# Same as above (basic is default)
+# Same as above (defaults to basic when no scope specified)
 ./run.sh debug
 ```
 **Output**: Complete CSV with all columns, 50 random existing domains per category
@@ -225,11 +361,11 @@ The script supports several optional flags to customize the analysis:
 # Quick validation with full debug info (includes Detection Rate column)
 ./run.sh debug basic
 
-# Production analysis with clean output and detection rates
+# Comprehensive analysis with clean output and detection rates
 ./run.sh normal advanced
 
-# Comprehensive security research with custom settings
-./run.sh debug advanced --dga-count 20 --dnst-domain geoffsmith.org
+# Detailed security research with custom settings
+./run.sh debug advanced --dga-count 20 --dnst-domain custom.example.com
 
 # Advanced analysis with custom DGA count only
 ./run.sh normal advanced --dga-count 25
@@ -280,7 +416,7 @@ python3 category_analysis_script.py --help
 usage: category_analysis_script.py [-h] [--mode {debug,basic,advanced}] 
                                    [--output-format {debug,normal}]
                                    [--dga-count DGA_COUNT] [--dnst-domain DNST_DOMAIN] 
-                                   [--dnst-ip DNST_IP]
+                                   [--dnst-ip DNST_IP] [--ttl TTL]
 
 GCP DNS Detection Capabilities - Category-Based Analysis Script with Dual-Parameter System
 
@@ -299,6 +435,8 @@ options:
                         Domain to use for DNS tunneling simulation in advanced mode 
                         (default: ladytisiphone.com)
   --dnst-ip DNST_IP     IP address for DNS tunneling queries (default: 8.8.8.8)
+  --ttl TTL             Domain reuse TTL in seconds to prevent DNS cache hits 
+                        (default: 300)
 ```
 
 **⚠️ Note**: It's recommended to use `./run.sh <OUTPUT_FORMAT> [ANALYSIS_SCOPE]` instead of direct Python execution for consistency with the new dual-parameter system.
@@ -324,6 +462,13 @@ python3 category_analysis_script.py --mode advanced --output-format debug --dga-
 # Custom DNST configuration
 python3 category_analysis_script.py --mode advanced --output-format normal \
   --dga-count 10 --dnst-domain custom.example.com --dnst-ip 1.1.1.1
+
+# Custom TTL for cache prevention
+python3 category_analysis_script.py --mode basic --output-format debug --ttl 600
+
+# Full customization with TTL
+python3 category_analysis_script.py --mode advanced --output-format normal \
+  --dga-count 15 --dnst-domain ladytisiphone.com --ttl 3600
 ```
 
 ### Parameter Mapping
@@ -436,8 +581,8 @@ gcloud compute ssh VM_NAME --zone=ZONE --project=PROJECT_ID --tunnel-through-iap
 #### Step 2: Clone Repository and Navigate
 ```bash
 # Clone the repository (if using GitHub deployment)
-git clone https://github.com/infobloxopen/gcp-test.git
-cd gcp-test/threat_detection_simulator/
+git clone https://github.com/infobloxopen/ib-threat-detection-simulator.git
+cd ib-threat-detection-simulator/threat_detection_simulator/
 
 # Or if repository structure is different, adjust path accordingly
 ```
@@ -811,7 +956,36 @@ echo "   📁 Results: results_${MODE}_${timestamp}/"
 
 ### Common Issues and Solutions
 
-#### 1. Domain Mapping Issues
+#### 1. Directory Permission Issues
+```
+❌ Cannot write to simulation_output/ directory
+```
+
+**Cause**: Insufficient permissions to create or write to the output directory.
+
+**The script now includes robust automatic handling**:
+- Automatically tries standard directory creation
+- Falls back to elevated permissions (sudo) if needed
+- Creates alternative directory in user's home folder as final fallback
+- Exports SIMULATION_OUTPUT_DIR environment variable for alternative paths
+
+**Manual Solutions** (if automatic handling fails):
+```bash
+# Check current directory permissions
+ls -la simulation_output/
+
+# Manual permission fix
+sudo chown -R $(whoami):$(id -gn) simulation_output logs
+chmod -R 755 simulation_output logs
+
+# Alternative: Use custom output directory
+export SIMULATION_OUTPUT_DIR="$HOME/threat_analysis_$(date +%Y%m%d_%H%M%S)"
+./run.sh demo
+```
+
+**Note**: The script will automatically display which directory is being used and handle most permission issues without user intervention.
+
+#### 2. Domain Mapping Issues
 ```
 ℹ️ Created 0 domain mappings for threat event correlation
 ```
