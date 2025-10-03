@@ -52,10 +52,11 @@ Thumbs.db
 *.txt
 threat_detection_simulator/*.txt
 
-# Threat Detection Simulator - Generated directories and files
+# Threat Detection Simulator specific
 threat_detection_simulator/venv/
 threat_detection_simulator/logs/
 threat_detection_simulator/simulation_output/
+threat_detection_simulator/*.backup_*
 threat_detection_simulator/category_output/
 threat_detection_simulator/*.log
 threat_detection_simulator/threat_detection_results.csv

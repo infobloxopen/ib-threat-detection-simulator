@@ -294,6 +294,7 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "  --dga-count <number>      Number of DGA domains to generate (default: 15)"
     echo "  --dnst-domain <domain>    Domain for DNST simulation (default: ladytisiphone.com)"
     echo "  --dnst-ip <ip>           IP address for DNST queries (default: 8.8.8.8)"
+    echo "  --ttl <seconds>          Domain reuse TTL in seconds (default: 300, prevents DNS cache hits)"
     echo "  --help, -h               Show this help message"
     echo ""
     echo "EXAMPLES:"
@@ -486,6 +487,21 @@ validate_parameters() {
                     return 1
                 fi
                 ;;
+            "--ttl")
+                i=$((i + 1))
+                if [ $i -ge ${#args_array[@]} ]; then
+                    echo "❌ --ttl flag requires a numeric argument"
+                    echo "Example: --ttl 300"
+                    return 1
+                fi
+                local ttl="${args_array[i]}"
+                if ! [[ "$ttl" =~ ^[0-9]+$ ]] || [ "$ttl" -lt 1 ]; then
+                    echo "❌ --ttl must be a positive number in seconds"
+                    echo "You provided: '$ttl'"
+                    echo "Example: --ttl 300 (5 minutes)"
+                    return 1
+                fi
+                ;;
             "--help"|"-h")
                 # Help flag is valid but should have been handled earlier
                 echo "ℹ️  Help flag detected with preset. Use './run.sh --help' for full documentation."
@@ -497,6 +513,7 @@ validate_parameters() {
                 echo "  --dga-count <number>   - Number of DGA domains (1-100)"
                 echo "  --dnst-domain <domain> - Domain for DNST simulation"
                 echo "  --dnst-ip <ip>        - IP address for DNST queries"
+                echo "  --ttl <seconds>        - Domain reuse TTL in seconds (default: 300)"
                 echo ""
                 echo "For full help, run: ./run.sh --help"
                 return 1
@@ -610,6 +627,15 @@ if [ -n "$REMAINING_ARGS" ]; then
                     shift 2
                 else
                     echo "❌ Error: --dnst-ip requires an IP address"
+                    exit 1
+                fi
+                ;;
+            --ttl)
+                if [ $# -gt 1 ] && [[ "$2" =~ ^[0-9]+$ ]]; then
+                    PYTHON_ARGS="$PYTHON_ARGS --ttl $2"
+                    shift 2
+                else
+                    echo "❌ Error: --ttl requires a numeric value in seconds"
                     exit 1
                 fi
                 ;;

@@ -166,6 +166,13 @@ Examples:
         help='Anycast IP for DNST queries (advanced mode, default: empty for system default)'
     )
     
+    parser.add_argument(
+        '--ttl',
+        type=int,
+        default=300,
+        help='Domain reuse TTL in seconds (default: 300, prevents DNS cache hits)'
+    )
+    
     return parser.parse_args()
 
 
@@ -312,13 +319,15 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
     return execution_results
 
 
-def load_category_indicators(file_path: str) -> Dict[str, List[str]]:
+def load_category_indicators(file_path: str, ttl_seconds: int = 300) -> Dict[str, List[str]]:
     """
     Load domain indicators organized by category from JSON file.
+    Filters domains based on TTL to prevent DNS cache hits.
     Randomly samples up to MAX_DOMAINS_PER_CATEGORY domains from each category.
     
     Args:
         file_path (str): Path to the category indicators JSON file
+        ttl_seconds (int): TTL in seconds for domain reuse filtering (default: 300)
         
     Returns:
         dict: Dictionary with categories as keys and sampled domain lists as values
@@ -331,34 +340,66 @@ def load_category_indicators(file_path: str) -> Dict[str, List[str]]:
         with open(file_path, 'r') as f:
             categories = json.load(f)
         
-        # Filter out empty categories, sample domains, and log statistics
+        # Filter out empty categories, apply TTL filtering, sample domains, and log statistics
         filtered_categories = {}
         total_domains = 0
         total_original_domains = 0
+        total_filtered_by_ttl = 0
+        current_time = int(time.time())  # Current Unix timestamp
         
-        for category, domains in categories.items():
-            if domains:  # Only include categories with domains
-                total_original_domains += len(domains)
+        logger.info(f"⏰ Current Unix timestamp: {current_time}")
+        logger.info(f"🕐 TTL setting: {ttl_seconds} seconds")
+        
+        for category, domain_data in categories.items():
+            if domain_data:  # Only include categories with domains
+                # Handle both old format (list of strings) and new format (list of objects)
+                available_domains = []
                 
-                # Sample up to MAX_DOMAINS_PER_CATEGORY domains randomly
-                if len(domains) > MAX_DOMAINS_PER_CATEGORY:
-                    sampled_domains = random.sample(domains, MAX_DOMAINS_PER_CATEGORY)
-                    logger.info(f"🎯 Category '{category}': Sampled {MAX_DOMAINS_PER_CATEGORY} from {len(domains)} domains")
+                for item in domain_data:
+                    if isinstance(item, str):
+                        # Old format - treat as never used (timestamp 0)
+                        available_domains.append(item)
+                    elif isinstance(item, dict) and 'domain' in item:
+                        # New format - check TTL
+                        domain = item['domain']
+                        last_used = item.get('last_usage_date_time', 0)
+                        
+                        # Check if domain is available based on TTL
+                        time_since_last_use = current_time - last_used
+                        if time_since_last_use >= ttl_seconds:
+                            available_domains.append(domain)
+                        else:
+                            total_filtered_by_ttl += 1
+                            logger.debug(f"🚫 Filtered {domain}: used {time_since_last_use}s ago (TTL: {ttl_seconds}s)")
+                
+                total_original_domains += len(domain_data)
+                
+                # Sample up to MAX_DOMAINS_PER_CATEGORY domains randomly from available domains
+                if available_domains:
+                    if len(available_domains) > MAX_DOMAINS_PER_CATEGORY:
+                        sampled_domains = random.sample(available_domains, MAX_DOMAINS_PER_CATEGORY)
+                        logger.info(f"🎯 Category '{category}': Sampled {MAX_DOMAINS_PER_CATEGORY} from {len(available_domains)} available domains (original: {len(domain_data)})")
+                    else:
+                        sampled_domains = available_domains
+                        logger.info(f"✅ Category '{category}': Using all {len(available_domains)} available domains (original: {len(domain_data)})")
+                    
+                    filtered_categories[category] = sampled_domains
+                    total_domains += len(sampled_domains)
                 else:
-                    sampled_domains = domains
-                    logger.info(f"✅ Category '{category}': Using all {len(domains)} domains")
-                
-                filtered_categories[category] = sampled_domains
-                total_domains += len(sampled_domains)
+                    logger.warning(f"⚠️ Category '{category}': No available domains after TTL filtering (original: {len(domain_data)}, filtered: {len(domain_data)})")
             else:
                 logger.info(f"ℹ️ Category '{category}': Empty, skipping")
         
         logger.info(f"📊 Domain Sampling Summary:")
         logger.info(f"   Original total domains: {total_original_domains}")
+        logger.info(f"   Filtered by TTL: {total_filtered_by_ttl}")
+        logger.info(f"   Available after TTL: {total_original_domains - total_filtered_by_ttl}")
         logger.info(f"   Sampled total domains: {total_domains}")
         logger.info(f"   Max per category: {MAX_DOMAINS_PER_CATEGORY}")
         logger.info(f"   Categories processed: {len(filtered_categories)}")
-        logger.info(f"   Reduction: {((total_original_domains - total_domains) / total_original_domains * 100):.1f}%")
+        if total_original_domains > 0:
+            logger.info(f"   TTL reduction: {(total_filtered_by_ttl / total_original_domains * 100):.1f}%")
+            logger.info(f"   Total reduction: {((total_original_domains - total_domains) / total_original_domains * 100):.1f}%")
         
         return filtered_categories
         
@@ -368,6 +409,53 @@ def load_category_indicators(file_path: str) -> Dict[str, List[str]]:
     except Exception as e:
         logger.error(f"❌ Error loading category indicators file: {e}")
         return {}
+
+
+def update_domain_timestamps(file_path: str, used_domains: List[str]) -> bool:
+    """
+    Update the last_usage_date_time for domains that were queried.
+    
+    Args:
+        file_path (str): Path to the category indicators JSON file
+        used_domains (List[str]): List of domains that were queried
+        
+    Returns:
+        bool: True if update was successful, False otherwise
+    """
+    try:
+        if not used_domains:
+            logger.info("ℹ️ No domains to update timestamps for")
+            return True
+            
+        # Load current data
+        with open(file_path, 'r') as f:
+            categories = json.load(f)
+        
+        current_time = int(time.time())
+        updated_count = 0
+        
+        logger.info(f"⏰ Updating timestamps for {len(used_domains)} domains to {current_time}")
+        
+        # Update timestamps for used domains
+        for category, domain_data in categories.items():
+            if isinstance(domain_data, list):
+                for item in domain_data:
+                    if isinstance(item, dict) and 'domain' in item:
+                        if item['domain'] in used_domains:
+                            item['last_usage_date_time'] = current_time
+                            updated_count += 1
+                            logger.debug(f"✅ Updated timestamp for {item['domain']}")
+        
+        # Save updated data
+        with open(file_path, 'w') as f:
+            json.dump(categories, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"✅ Successfully updated timestamps for {updated_count} domains")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating domain timestamps: {str(e)}")
+        return False
 
 
 def create_empty_log_result(category: str, domains: List[str]) -> Dict:
@@ -1113,7 +1201,7 @@ def main():
         # Load category indicators
         logger.info("📥 Loading category indicators...")
         category_file = os.path.join(os.path.dirname(__file__), CATEGORY_INDICATORS_FILE)
-        all_categories = load_category_indicators(category_file)
+        all_categories = load_category_indicators(category_file, args.ttl)
         
         if not all_categories:
             raise Exception("No domain categories loaded from indicators file")
@@ -1306,6 +1394,29 @@ def main():
         output_dir = os.path.join(os.path.dirname(__file__), SIMULATION_OUTPUT_DIR)
         generate_category_csv(query_results, log_results, output_dir, args.output_format)
         generate_category_json_files(query_results, log_results, output_dir)
+        
+        # STEP 5: Update domain timestamps to prevent reuse within TTL
+        logger.info(f"\n⏰ STEP 5: Updating domain usage timestamps")
+        logger.info("="*60)
+        
+        # Collect all domains that were actually queried
+        all_queried_domains = []
+        for query_result in query_results:
+            if 'domains' in query_result and query_result['domains']:
+                all_queried_domains.extend(query_result['domains'])
+        
+        # Update timestamps for queried domains
+        if all_queried_domains:
+            category_file = os.path.join(os.path.dirname(__file__), CATEGORY_INDICATORS_FILE)
+            if update_domain_timestamps(category_file, all_queried_domains):
+                logger.info(f"✅ Successfully updated timestamps for {len(all_queried_domains)} domains")
+                logger.info(f"   These domains will be unavailable for {args.ttl} seconds to prevent DNS cache hits")
+            else:
+                logger.warning("⚠️ Failed to update domain timestamps - TTL protection may not work correctly")
+        else:
+            logger.info("ℹ️ No domains to update timestamps for")
+        
+        flush_logs()
         
         logger.info("🎉 Category analysis execution completed successfully!")
         logger.info("="*80)
