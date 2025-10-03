@@ -20,6 +20,57 @@ threat_detection_simulator/
     └── threat_categories.py
 ```
 
+## TTL-Based Domain Caching System
+
+### 🕐 DNS Cache Prevention with TTL
+
+To ensure accurate threat detection metrics, the tool implements a **TTL-based domain caching system** that prevents DNS cache hits from skewing detection rates.
+
+#### **The Problem**
+When running the same domains multiple times within the DNS TTL period (typically 300 seconds), subsequent `dig` commands return cached results without generating new GCP DNS logs. This leads to:
+- **Artificially high detection rates** on repeated runs
+- **Inaccurate metrics** due to missing DNS query logs  
+- **Inconsistent results** between fresh runs and cached runs
+
+#### **The Solution**
+The tool now tracks domain usage with Unix timestamps and automatically filters recently used domains:
+
+```bash
+# Use default TTL (300 seconds = 5 minutes)
+./run.sh debug basic
+
+# Use custom TTL for testing (30 seconds)
+./run.sh debug basic --ttl 30
+
+# Use longer TTL for production (1 hour)
+./run.sh normal advanced --ttl 3600
+```
+
+#### **How It Works**
+1. **Domain Tracking**: Each domain in `ib-base-category.json` has a `last_usage_date_time` timestamp
+2. **Smart Filtering**: Domains used within the TTL period are automatically excluded from selection
+3. **Fresh Queries**: Only "fresh" domains (unused within TTL) are queried, ensuring new DNS logs
+4. **Automatic Updates**: After DNS queries complete, timestamps are updated to prevent immediate reuse
+
+#### **TTL Configuration**
+- **Default**: 300 seconds (5 minutes) - balances cache avoidance with domain availability
+- **Testing**: 30-60 seconds - for rapid testing cycles
+- **Production**: 3600+ seconds (1+ hour) - for maximum cache avoidance in production environments
+
+#### **TTL Statistics**
+The tool provides detailed statistics about domain filtering:
+```
+📊 Domain Sampling Summary:
+   Original total domains: 4000
+   Filtered by TTL: 12
+   Available after TTL: 3988
+   Sampled total domains: 400
+   TTL reduction: 0.3%
+   Total reduction: 90.0%
+```
+
+This ensures that every run generates fresh DNS queries and produces accurate, reliable detection rate measurements.
+
 ## Running Modes and Parameters
 
 ### 🔧 Available Parameter Combinations
@@ -88,8 +139,11 @@ All parameter combinations support additional flags:
 # Custom DNST domain
 ./run.sh normal advanced --dnst-domain custom.example.com
 
+# Custom TTL to prevent DNS cache hits
+./run.sh debug basic --ttl 600
+
 # Multiple custom flags
-./run.sh debug advanced --dga-count 20 --dnst-domain research.domain.com
+./run.sh debug advanced --dga-count 20 --dnst-domain research.domain.com --ttl 300
 
 # Get help
 ./run.sh --help
@@ -227,6 +281,13 @@ The script supports several optional flags to customize the analysis:
 **Usage**: `./run.sh debug advanced --dnst-ip 1.1.1.1`  
 **Details**: Target IP address for DNS tunneling simulation queries
 
+### 🕐 `--ttl <seconds>`
+**Purpose**: Control domain reuse prevention with TTL-based caching
+
+**Default**: 300 seconds (5 minutes)  
+**Usage**: `./run.sh debug basic --ttl 600`  
+**Details**: Domains used within this time period are filtered out to prevent DNS cache hits and ensure accurate detection rates. Use smaller values (30-60s) for testing, larger values (3600s+) for production.
+
 ### ❓ `--help` or `-h`
 **Purpose**: Display comprehensive usage information and examples
 
@@ -355,7 +416,7 @@ python3 category_analysis_script.py --help
 usage: category_analysis_script.py [-h] [--mode {debug,basic,advanced}] 
                                    [--output-format {debug,normal}]
                                    [--dga-count DGA_COUNT] [--dnst-domain DNST_DOMAIN] 
-                                   [--dnst-ip DNST_IP]
+                                   [--dnst-ip DNST_IP] [--ttl TTL]
 
 GCP DNS Detection Capabilities - Category-Based Analysis Script with Dual-Parameter System
 
@@ -374,6 +435,8 @@ options:
                         Domain to use for DNS tunneling simulation in advanced mode 
                         (default: ladytisiphone.com)
   --dnst-ip DNST_IP     IP address for DNS tunneling queries (default: 8.8.8.8)
+  --ttl TTL             Domain reuse TTL in seconds to prevent DNS cache hits 
+                        (default: 300)
 ```
 
 **⚠️ Note**: It's recommended to use `./run.sh <OUTPUT_FORMAT> [ANALYSIS_SCOPE]` instead of direct Python execution for consistency with the new dual-parameter system.
@@ -399,6 +462,13 @@ python3 category_analysis_script.py --mode advanced --output-format debug --dga-
 # Custom DNST configuration
 python3 category_analysis_script.py --mode advanced --output-format normal \
   --dga-count 10 --dnst-domain custom.example.com --dnst-ip 1.1.1.1
+
+# Custom TTL for cache prevention
+python3 category_analysis_script.py --mode basic --output-format debug --ttl 600
+
+# Full customization with TTL
+python3 category_analysis_script.py --mode advanced --output-format normal \
+  --dga-count 15 --dnst-domain ladytisiphone.com --ttl 3600
 ```
 
 ### Parameter Mapping
