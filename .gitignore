@@ -57,6 +57,54 @@ threat_detection_simulator/venv/
 threat_detection_simulator/logs/
 threat_detection_simulator/simulation_output/
 threat_detection_simulator/*.backup_*
+threat_detection_simulator/__pycache__/
+threat_detection_simulator/**/__pycache__/
+threat_detection_simulator/.pytest_cache/
+threat_detection_simulator/**/.pytest_cache/
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+.Python
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git
+.mypy_cache
+.pytest_cache
+.hypothesis
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 threat_detection_simulator/category_output/
 threat_detection_simulator/*.log
 threat_detection_simulator/threat_detection_results.csv
