@@ -61,7 +61,7 @@ logger = get_logger(__name__)
 # Category-based constants
 CATEGORY_INDICATORS_FILE = "ib-base-category.json"
 CATEGORY_OUTPUT_CSV_FILE = "threat_detection_results.csv"
-CATEGORY_OUTPUT_DIR = "simulation_output"
+CATEGORY_OUTPUT_DIR = "category_output"
 
 # Domain sampling configuration
 MAX_DOMAINS_PER_CATEGORY = 50   # Reduced to 50 domains per category for better accuracy
@@ -134,7 +134,7 @@ Examples:
     parser.add_argument(
         '--mode',
         choices=EXECUTION_MODES,
-        default='debug',
+        default='basic',
         help='Execution mode: debug (basic+DNS details), basic (+DGA), advanced (+DGA+DNST)'
     )
     
