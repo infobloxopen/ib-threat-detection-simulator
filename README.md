@@ -90,6 +90,8 @@ Domain Category,Client DNS Query Domain,Total Threat Count,Distinct domain Threa
 
 Controls which domains are analyzed:
 
+**Note**: When using direct Python execution, the default mode is `basic` for faster execution. The `run.sh` script defaults to `advanced` scope for comprehensive analysis.
+
 ### 🏗️ BASIC Analysis Scope (`basic`)
 **Purpose**: Analysis of existing threat intelligence domains only
 
@@ -347,17 +349,28 @@ The new dual-parameter system maps to Python arguments as follows:
 
 ### VM Service Account Permissions
 
-⚠️ **Critical**: Your VM must use the **Compute Engine default service account** with the correct scopes to access Cloud Logging API.
+⚠️ **Critical**: Your VM must use the **Compute Engine default service account** with the correct scopes and IAM roles to access Cloud Logging API.
 
 **Required Service Account**: `PROJECT_NUMBER-compute@developer.gserviceaccount.com`
 - This is the default service account automatically assigned to Compute Engine VMs
 - Format: `[PROJECT_NUMBER]-compute@developer.gserviceaccount.com`
 - Example: `123456789012-compute@developer.gserviceaccount.com`
 
+**Required IAM Roles for the Service Account**:
+The Compute Engine default service account needs the following IAM roles:
+1. **`roles/logging.viewer`** - To read Cloud Logging entries using `gcloud logging read`
+2. **`roles/compute.viewer`** - To access VM metadata (already included with default service account)
+
+**Required OAuth Scopes**:
+The VM must be created with one of these scopes:
+- `https://www.googleapis.com/auth/cloud-platform` (Full access - **Recommended**)
+- `https://www.googleapis.com/auth/logging.read` (Minimal access for logging only)
+
 **Option 1: Create VM with Correct Settings (Recommended)**
 When creating a VM, ensure:
 1. **Service Account**: Use "Compute Engine default service account" 
 2. **Access Scopes**: Select "Allow full access to all Cloud APIs"
+3. **IAM Roles**: Ensure the service account has `roles/logging.viewer`
 
 ```bash
 # Create VM with correct service account and scopes
@@ -366,6 +379,11 @@ gcloud compute instances create VM_NAME \
   --project=PROJECT_ID \
   --service-account=PROJECT_NUMBER-compute@developer.gserviceaccount.com \
   --scopes=https://www.googleapis.com/auth/cloud-platform
+
+# Grant logging.viewer role to the service account (if not already granted)
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/logging.viewer"
 ```
 
 **Option 2: Update Existing VM**
@@ -379,11 +397,16 @@ gcloud compute instances set-service-account VM_NAME \
   --scopes=https://www.googleapis.com/auth/cloud-platform \
   --zone=ZONE --project=PROJECT_ID
 
+# Grant logging.viewer role to the service account (if not already granted)
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/logging.viewer"
+
 # Start the VM
 gcloud compute instances start VM_NAME --zone=ZONE --project=PROJECT_ID
 ```
 
-**Verify Service Account**:
+**Verify Service Account and Permissions**:
 ```bash
 # Check current service account on VM
 gcloud compute instances describe VM_NAME \
@@ -391,6 +414,15 @@ gcloud compute instances describe VM_NAME \
   --format="value(serviceAccounts[0].email)"
 
 # Should return: PROJECT_NUMBER-compute@developer.gserviceaccount.com
+
+# Verify IAM roles for the service account
+gcloud projects get-iam-policy PROJECT_ID \
+  --flatten="bindings[].members" \
+  --format="table(bindings.role)" \
+  --filter="bindings.members:PROJECT_NUMBER-compute@developer.gserviceaccount.com"
+
+# Test logging access from the VM
+gcloud logging read "timestamp>=2024-01-01" --limit=1
 ```
 
 ## Step-by-Step VM Deployment Guide
@@ -531,6 +563,21 @@ python3 category_analysis_script.py
 
 The script generates comprehensive analysis outputs with mode-dependent enhancements:
 
+### Output Directory Structure
+All output files are now consistently written to the `category_output/` directory:
+
+```
+threat_detection_simulator/
+├── category_output/              # Main output directory
+│   ├── threat_detection_results.csv
+│   ├── threat_event_*.json       # Per-category threat events
+│   ├── dns_logs_*.json           # Per-category DNS logs (debug mode only)
+│   └── non_detected_domains_*.json
+├── logs/                         # Execution logs
+│   └── sales_demo.log
+└── ...
+```
+
 ### CSV Output Enhancement
 - **DEBUG MODE**: Includes DNS query columns for detailed analysis
   ```csv
@@ -546,10 +593,10 @@ The script generates comprehensive analysis outputs with mode-dependent enhancem
 - **DNST_Tunneling**: DNS tunneling simulation domains (Advanced mode only)
 
 ### Output Files Generated
-- `simulation_output/threat_detection_results.csv` - Mode-dependent summary statistics
-- `simulation_output/threat_event_*.json` - Per-category threat detection logs with domain mapping
-- `simulation_output/dns_logs_*.json` - Per-category DNS query logs (Debug mode only)
-- `simulation_output/non_detected_domains_*.json` - Per-category analysis of non-detected domains
+- `category_output/threat_detection_results.csv` - Mode-dependent summary statistics
+- `category_output/threat_event_*.json` - Per-category threat detection logs with domain mapping
+- `category_output/dns_logs_*.json` - Per-category DNS query logs (Debug mode only)
+- `category_output/non_detected_domains_*.json` - Per-category analysis of non-detected domains
 - `logs/sales_demo.log` - Comprehensive execution logs with domain transformation details
 
 ### Sample Enhanced Output
@@ -811,6 +858,41 @@ echo "   📁 Results: results_${MODE}_${timestamp}/"
 
 ### Common Issues and Solutions
 
+#### 0. Output Directory Issues
+```
+⚠️  No output files found. Check the script output above for errors.
+   Common issues:
+   - Permission denied on directory creation
+   - Insufficient disk space
+   - Python script execution errors
+```
+
+**Cause**: Directory creation or write permission issues with `category_output/` directory.
+
+**Solutions**:
+```bash
+# Check if directory exists and permissions
+ls -la category_output/
+ls -la logs/
+
+# Manual directory creation with proper permissions
+mkdir -p category_output logs
+chmod 755 category_output logs
+sudo chown $(whoami):$(id -gn) category_output logs 2>/dev/null || true
+
+# Test write access
+touch category_output/.write_test && rm category_output/.write_test
+echo "✅ category_output/ is writable" || echo "❌ Cannot write to category_output/"
+
+# Check disk space
+df -h .
+
+# Run with alternative output directory
+export CATEGORY_OUTPUT_DIR="/tmp/threat_analysis_output"
+mkdir -p "$CATEGORY_OUTPUT_DIR"
+./run.sh debug basic
+```
+
 #### 1. Domain Mapping Issues
 ```
 ℹ️ Created 0 domain mappings for threat event correlation
@@ -906,9 +988,9 @@ gcloud config list project
 ❌ PERMISSION_DENIED: Request had insufficient authentication scopes
 ```
 
-**Cause**: VM service account lacks Cloud Logging API access or wrong service account is being used.
+**Cause**: VM service account lacks Cloud Logging API access, wrong service account is being used, or missing IAM roles.
 
-**Solution 1**: Verify you're using the Compute Engine default service account:
+**Solution 1**: Verify you're using the Compute Engine default service account with proper IAM roles:
 ```bash
 # Check current service account
 gcloud compute instances describe $VM_NAME \
@@ -916,6 +998,17 @@ gcloud compute instances describe $VM_NAME \
   --format="value(serviceAccounts[0].email)"
 
 # Should return: PROJECT_NUMBER-compute@developer.gserviceaccount.com
+
+# Check if the service account has logging.viewer role
+gcloud projects get-iam-policy $PROJECT_ID \
+  --flatten="bindings[].members" \
+  --format="table(bindings.role)" \
+  --filter="bindings.members:*-compute@developer.gserviceaccount.com AND bindings.role:roles/logging.viewer"
+
+# If no results, grant the role:
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
+  --role="roles/logging.viewer"
 # If not, update the service account (requires VM restart)
 ```
 
@@ -1048,11 +1141,13 @@ tail -f logs/sales_demo.log | grep -E "(Mode|execution time|Created.*mapping)"
 | **VM Type** | GCP Compute Engine VM | `curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/name` | All modes |
 | **Service Account** | Cloud Platform scope | `gcloud auth list` | All modes |
 | **Service Account Type** | Compute Engine default service account | `gcloud compute instances describe VM --format="value(serviceAccounts[0].email)"` | All modes |
+| **IAM Roles** | `roles/logging.viewer` | `gcloud projects get-iam-policy PROJECT --filter="bindings.role:roles/logging.viewer"` | All modes |
 | **Python** | 3.8+ | `python3 --version` | All modes |
 | **gcloud CLI** | Latest version | `gcloud --version` | All modes |
 | **Network** | Internet + GCP API access | `gcloud compute instances list` | All modes |
 | **Permissions** | Cloud Logging read access | `gcloud logging read "timestamp>=2024-01-01" --limit=1` | All modes |
 | **Storage** | 1GB+ free space | `df -h` | All modes |
+| **Output Directory** | Write access to `category_output/` | `touch category_output/.test && rm category_output/.test` | All modes |
 | **DNS Tools** | dig command available | `dig --version` | Required for DNST (Advanced mode) - *Auto-installed* |
 | **Domain Resolution** | Custom domain access | `dig ladytisiphone.com` | DNST functionality (Advanced mode) |
 
