@@ -166,10 +166,17 @@ Examples:
         help='Anycast IP for DNST queries (advanced mode, default: empty for system default)'
     )
     
+    parser.add_argument(
+        '--dns-server',
+        type=str,
+        default='169.154.169.254',
+        help='DNS server IP for all dig queries (default: 169.154.169.254, use "legacy" for no DNS server specification)'
+    )
+    
     return parser.parse_args()
 
 
-def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str = 'ladytisiphone.com', dnst_ip: str = '') -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]:
+def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str = 'ladytisiphone.com', dnst_ip: str = '', dns_server: str = '169.154.169.254') -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]:
     """
     Generate additional domains based on execution mode.
     NOTE: This now only prepares domains - actual execution happens later with proper timing.
@@ -179,6 +186,7 @@ def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str
         dga_count (int): Number of DGA domains to generate
         dnst_domain (str): Domain for DNST simulation
         dnst_ip (str): IP for DNST queries
+        dns_server (str): DNS server to use for queries (default: 169.154.169.254, use 'legacy' for no DNS server)
         
     Returns:
         Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]: Additional domains, domain mapping, execution config
@@ -234,13 +242,14 @@ def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str
     return additional_domains, domain_mapping, execution_config
 
 
-def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]]) -> Dict[str, Dict]:
+def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]], dns_server: str = '169.154.169.254') -> Dict[str, Dict]:
     """
     Execute additional domain queries (DGA and DNST) with precise timing for log correlation.
     
     Args:
         execution_config (Dict[str, Dict]): Configuration for additional domain execution
         categories (Dict[str, List[str]]): Categories dict to update with actual domains
+        dns_server (str): DNS server IP to use for queries
         
     Returns:
         Dict[str, Dict]: Execution timing results for each additional category
@@ -265,8 +274,13 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                     # Execute local dig query
                     try:
                         import subprocess
-                        result = subprocess.run(['dig', '+short', domain], 
-                                              capture_output=True, text=True, timeout=5)
+                        # Build dig command based on dns_server parameter
+                        if dns_server and dns_server.lower() != 'legacy':
+                            dig_cmd = ['dig', f'@{dns_server}', '+short', domain]
+                        else:
+                            dig_cmd = ['dig', '+short', domain]
+                        
+                        result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=5)
                         logger.debug(f"   DGA query: {domain} -> {result.returncode}")
                     except Exception as e:
                         logger.debug(f"   DGA query failed: {domain} -> {e}")
@@ -280,7 +294,7 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 anycast_ip = config['anycast_ip']
                 
                 logger.info(f"🔗 Executing DNST tunneling simulation for: {base_domain}")
-                dnst_result = generate_dnst_data_exfiltration(domain=base_domain, anycast_ip=anycast_ip)
+                dnst_result = generate_dnst_data_exfiltration(domain=base_domain, anycast_ip=anycast_ip, dns_server=dns_server)
                 
                 # Update the category with the actual DNST domain
                 categories[category] = [dnst_result]
@@ -401,7 +415,7 @@ def create_empty_log_result(category: str, domains: List[str]) -> Dict:
     }
 
 
-def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str]) -> Dict:
+def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str], dns_server: str = '169.154.169.254') -> Dict:
     """
     Execute DNS queries for a specific domain category on a single VM using batching.
     Processes domains in batches of CATEGORY_BATCH_SIZE for optimal performance.
@@ -411,6 +425,7 @@ def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, dom
         vm_config (dict): VM configuration
         category (str): Domain category name
         domains (list): List of domains to query for this category
+        dns_server (str): DNS server IP to use for queries
         
     Returns:
         dict: Query execution results with timing information
@@ -428,8 +443,12 @@ def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, dom
         all_dig_results = {}
         for domain in domains:
             try:
-                # Run dig locally
-                dig_cmd = ["dig", domain, "+short"]
+                # Build dig command based on dns_server parameter
+                if dns_server and dns_server.lower() != 'legacy':
+                    dig_cmd = ["dig", f"@{dns_server}", domain, "+short"]
+                else:
+                    dig_cmd = ["dig", domain, "+short"]
+                
                 result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=10)
                 status = "success" if result.returncode == 0 else "error"
                 all_dig_results[domain] = {
@@ -1141,7 +1160,8 @@ def main():
             mode=args.mode,
             dga_count=args.dga_count,
             dnst_domain=args.dnst_domain,
-            dnst_ip=args.dnst_ip
+            dnst_ip=args.dnst_ip,
+            dns_server=args.dns_server
         )
         
         # Merge additional domains with existing categories
@@ -1173,7 +1193,7 @@ def main():
         # First execute additional domains (DGA/DNST) with precise timing
         if execution_config:
             logger.info(f"\n🎯 Executing additional domain queries with precise timing...")
-            additional_execution_results = execute_additional_domains(execution_config, categories)
+            additional_execution_results = execute_additional_domains(execution_config, categories, args.dns_server)
             flush_logs()
         
         # Then execute regular category domains
@@ -1203,7 +1223,7 @@ def main():
                     query_results.append(result)
                     logger.info(f"✅ Used precise timing for {category}: {exec_result['execution_time']:.1f}s")
                     continue
-                result = execute_queries_for_category(vm_id, vm_config, category, domains)
+                result = execute_queries_for_category(vm_id, vm_config, category, domains, args.dns_server)
                 query_results.append(result)
             except Exception as e:
                 logger.error(f"❌ Category {category} query execution failed: {e}")

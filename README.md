@@ -30,7 +30,7 @@ threat_detection_simulator/
 6. **🔧 Dynamic VM Detection**: Automatically detects VM metadata from GCP metadata server
 7. **📦 Zero Configuration**: No need for values.yaml or manual configuration files
 8. **🌐 Multi-VM Support**: Works on any GCP VM without hardcoded instance IDs
-9. **🏃 Local Execution**: Runs `dig` commands locally and fetches GCP logs directly
+9. **🏃 Local Execution**: Runs `dig` commands locally using specific DNS server (169.154.169.254) and fetches GCP logs directly
 10. **📊 Flexible CSV Output**: Output format-dependent CSV columns for optimal data presentation
 11. **🛡️ Robust Logging**: Graceful fallback for log file permissions
 12. **❓ Comprehensive Help**: Built-in `--help` flag with usage examples and feature documentation
@@ -208,6 +208,22 @@ The script supports several optional flags to customize the analysis:
 ```
 **Output**: Clean CSV with threat columns and detection rates, 50 random existing domains per category
 
+#### Example 5: Custom DNS Server Configuration
+```bash
+# Using Google's public DNS server
+./run.sh debug basic --dns-server 8.8.8.8
+
+# Using Cloudflare's DNS server
+./run.sh debug basic --dns-server 1.1.1.1
+
+# Using legacy mode (system default DNS)
+./run.sh debug basic --dns-server legacy
+
+# Combined with other parameters
+./run.sh debug advanced --dns-server 8.8.8.8 --dga-count 20
+```
+**Output**: DNS queries will use the specified DNS server or system default (legacy mode)
+
 ---
 
 ### ⚙️ Parameter Combinations
@@ -343,9 +359,57 @@ The new dual-parameter system maps to Python arguments as follows:
 - **Python 3.8+**
 - **Google Cloud CLI** configured with authentication  
 - **dig command** available (usually pre-installed on most systems)
+- **DNS Server Access**: All DNS queries use specific server `169.154.169.254` for consistent resolution
 - **VM Metadata Access**: VM must have access to metadata.google.internal (default for GCP VMs)
 - **Compute Engine Default Service Account**: VM must use `PROJECT_NUMBER-compute@developer.gserviceaccount.com`
 - **Cloud Logging API Access**: VM service account needs appropriate logging permissions
+
+### DNS Server Configuration
+
+🌐 **Configurable DNS Server**: This tool supports flexible DNS server configuration for different environments and use cases.
+
+**Default Configuration** (Recommended):
+```bash
+./run.sh debug basic --dns-server 169.154.169.254
+```
+All `dig` commands are executed with:
+```bash
+dig @169.154.169.254 +short <domain>
+```
+
+**Custom DNS Server**:
+```bash
+./run.sh debug basic --dns-server 8.8.8.8
+```
+Uses Google's public DNS server:
+```bash
+dig @8.8.8.8 +short <domain>
+```
+
+**Legacy Mode** (no specific DNS server):
+```bash
+./run.sh debug basic --dns-server legacy
+```
+Uses system default DNS server:
+```bash
+dig +short <domain>
+```
+
+**Why Use 169.154.169.254 (Default)**:
+- ✅ DNS queries are properly logged in GCP Cloud Logging
+- ✅ Threat detection events correlate correctly with DNS queries
+- ✅ Consistent resolution behavior across different VM environments
+- ✅ Proper integration with GCP's DNS threat detection system
+
+**When to Use Custom DNS Servers**:
+- 🔄 Testing with different DNS providers (8.8.8.8, 1.1.1.1, etc.)
+- 🏢 Corporate environments with specific DNS requirements
+- 🧪 Comparative analysis across different DNS servers
+
+**When to Use Legacy Mode**:
+- 📜 Older GCP environments without 169.154.169.254 support
+- 🔧 Troubleshooting DNS resolution issues
+- 🔄 Systems where specific DNS server specification causes issues
 
 ### VM Service Account Permissions
 
@@ -468,8 +532,8 @@ gcloud compute ssh VM_NAME --zone=ZONE --project=PROJECT_ID --tunnel-through-iap
 #### Step 2: Clone Repository and Navigate
 ```bash
 # Clone the repository (if using GitHub deployment)
-git clone https://github.com/infobloxopen/gcp-test.git
-cd gcp-test/threat_detection_simulator/
+git clone https://github.com/infobloxopen/ib-threat-detection-simulator.git
+cd ib-threat-detection-simulator/threat_detection_simulator/
 
 # Or if repository structure is different, adjust path accordingly
 ```
@@ -858,7 +922,52 @@ echo "   📁 Results: results_${MODE}_${timestamp}/"
 
 ### Common Issues and Solutions
 
-#### 0. Output Directory Issues
+#### 0. Exit Code 127 - Command Not Found
+```
+❌ Script execution failed with exit code: 127
+./run.sh: line 461: python: command not found
+```
+
+**Cause**: This usually indicates one of three issues:
+1. **Corrupted virtual environment symlinks** (common when transferring files from macOS to Linux)
+2. **Missing `python` symlink** in virtual environment (only `python3` available)
+3. **Python commands not found** in the system PATH
+
+**Solutions**:
+```bash
+# Method 1: Clean restart (removes corrupted virtual environment)
+cd ib-threat-detection-simulator/threat_detection_simulator
+rm -rf venv
+find . -name '._*' -type f -delete  # Remove macOS extended attributes
+
+# Clean start - the script will recreate the virtual environment properly
+./run.sh debug basic
+
+# Method 2: Force system-wide installation if virtual environment keeps failing
+export SKIP_VENV=1
+./run.sh debug basic
+
+# Method 3: Manual verification and symlink creation
+# Check if Python is available
+which python3 && python3 --version
+which python && python --version
+
+# If only python3 is available, create a symlink manually:
+# (This is now handled automatically by the updated run.sh script)
+
+# Method 4: Check PATH and virtual environment status
+echo "PATH: $PATH"
+echo "VIRTUAL_ENV: $VIRTUAL_ENV"
+source venv/bin/activate 2>/dev/null && echo "Virtual env activated" || echo "No virtual env"
+```
+
+**Prevention**: The updated `run.sh` script now automatically:
+- ✅ Detects and removes corrupted virtual environments
+- ✅ Creates proper `python` symlinks when needed
+- ✅ Falls back to `python3` if `python` is not available
+- ✅ Provides detailed debugging information about Python commands
+
+#### 1. Output Directory Issues
 ```
 ⚠️  No output files found. Check the script output above for errors.
    Common issues:
@@ -921,8 +1030,8 @@ print('Expected domains:', expected[:3])
 
 **Solutions**:
 ```bash
-# Test DNS resolution
-dig ladytisiphone.com
+# Test DNS resolution using the specific DNS server
+dig @169.154.169.254 ladytisiphone.com
 
 # Test with simpler DNST domain
 python3 category_analysis_script.py --mode advanced --dnst-domain example.com
@@ -1046,8 +1155,8 @@ error: externally-managed-environment
 
 **Possible Causes & Solutions**:
 ```bash
-# Check if dig is working
-dig google.com
+# Check if dig is working with the specific DNS server
+dig @169.154.169.254 google.com
 
 # Verify VM instance ID is numeric
 python3 -c "
@@ -1149,7 +1258,7 @@ tail -f logs/sales_demo.log | grep -E "(Mode|execution time|Created.*mapping)"
 | **Storage** | 1GB+ free space | `df -h` | All modes |
 | **Output Directory** | Write access to `category_output/` | `touch category_output/.test && rm category_output/.test` | All modes |
 | **DNS Tools** | dig command available | `dig --version` | Required for DNST (Advanced mode) - *Auto-installed* |
-| **Domain Resolution** | Custom domain access | `dig ladytisiphone.com` | DNST functionality (Advanced mode) |
+| **Domain Resolution** | Custom domain access | `dig @169.154.169.254 ladytisiphone.com` | DNST functionality (Advanced mode) |
 
 ### Mode-Specific Requirements
 
