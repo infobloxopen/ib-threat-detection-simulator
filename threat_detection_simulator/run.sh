@@ -35,7 +35,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-SCRIPT_TIMEOUT=300  # 5 minutes timeout for script execution
+SCRIPT_TIMEOUT=600  # 10 minutes timeout for script execution
 PACKAGE_TIMEOUT=60  # 1 minute timeout for package operations
 
 # Function to print colored output
