@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Enhanced Threat Detection Simulator Runner with VM Portability
-# Supports: --dns-server legacy for custom DNS configurations
+# Supports: --dns-server configurations for different DNS setups
 # Features: Intelligent package management, timeout protection, automated setup
 #
 # PREREQUISITES:
@@ -18,12 +18,13 @@
 # PARAMETERS:
 #   log_level:    debug | info | warning | error
 #   mode:         basic | advanced | comprehensive
-#   --dns-server: Optional DNS server configuration (e.g., 'legacy')
+#   --dns-server: Optional DNS server configuration
+#                 (no flag: system default, 'default': 169.154.169.254, IP: use that IP)
 #
 # EXAMPLES:
-#   ./run.sh debug basic                    # Debug level + basic mode
-#   ./run.sh info advanced --dns-server legacy  # Info level + advanced mode + legacy DNS
-#   ./run.sh warning comprehensive         # Warning level + comprehensive mode
+#   ./run.sh debug basic                         # Debug level + basic mode + system DNS
+#   ./run.sh info advanced --dns-server default # Info level + advanced mode + GCP DNS (169.154.169.254)
+#   ./run.sh warning comprehensive --dns-server 1.1.1.1  # Warning level + comprehensive mode + Cloudflare DNS
 
 # Color codes for output
 RED='\033[0;31m'
@@ -130,12 +131,13 @@ main() {
         echo "Parameters:"
         echo "  log_level:    debug | info | warning | error"
         echo "  mode:         basic | advanced | comprehensive"
-        echo "  --dns-server: Optional DNS server configuration (e.g., 'legacy')"
+        echo "  --dns-server: Optional DNS server configuration"
+        echo "                (no flag: system default, 'default': 169.154.169.254, IP: use that IP)"
         echo
         echo "Examples:"
-        echo "  $0 debug basic"
-        echo "  $0 info advanced --dns-server legacy"
-        echo "  $0 warning comprehensive --dns-server custom"
+        echo "  $0 debug basic                         # System default DNS"
+        echo "  $0 info advanced --dns-server default  # GCP internal DNS (169.154.169.254)"
+        echo "  $0 warning comprehensive --dns-server 1.1.1.1  # Cloudflare DNS"
         echo
         exit 1
     fi

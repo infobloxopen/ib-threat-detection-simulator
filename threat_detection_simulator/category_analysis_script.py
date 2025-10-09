@@ -169,14 +169,14 @@ Examples:
     parser.add_argument(
         '--dns-server',
         type=str,
-        default='169.154.169.254',
-        help='DNS server IP for all dig queries (default: 169.154.169.254, use "legacy" for no DNS server specification)'
+        default=None,
+        help='DNS server IP for all dig queries (no flag: system default, "default": 169.154.169.254, IP address: use that IP)'
     )
     
     return parser.parse_args()
 
 
-def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str = 'ladytisiphone.com', dnst_ip: str = '', dns_server: str = '169.154.169.254') -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]:
+def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str = 'ladytisiphone.com', dnst_ip: str = '', dns_server: str = None) -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]:
     """
     Generate additional domains based on execution mode.
     NOTE: This now only prepares domains - actual execution happens later with proper timing.
@@ -186,7 +186,7 @@ def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str
         dga_count (int): Number of DGA domains to generate
         dnst_domain (str): Domain for DNST simulation
         dnst_ip (str): IP for DNST queries
-        dns_server (str): DNS server to use for queries (default: 169.154.169.254, use 'legacy' for no DNS server)
+        dns_server (str): DNS server to use for queries (None: system default, 'default': 169.154.169.254, IP: use that IP)
         
     Returns:
         Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]: Additional domains, domain mapping, execution config
@@ -242,7 +242,7 @@ def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str
     return additional_domains, domain_mapping, execution_config
 
 
-def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]], dns_server: str = '169.154.169.254') -> Dict[str, Dict]:
+def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]], dns_server: str = None) -> Dict[str, Dict]:
     """
     Execute additional domain queries (DGA and DNST) with precise timing for log correlation.
     
@@ -275,10 +275,15 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                     try:
                         import subprocess
                         # Build dig command based on dns_server parameter
-                        if dns_server and dns_server.lower() != 'legacy':
-                            dig_cmd = ['dig', f'@{dns_server}', '+short', domain]
-                        else:
+                        if dns_server is None:
+                            # No --dns-server flag: use system default
                             dig_cmd = ['dig', '+short', domain]
+                        elif dns_server.lower() == 'default':
+                            # --dns-server default: use GCP internal DNS
+                            dig_cmd = ['dig', '@169.154.169.254', '+short', domain]
+                        else:
+                            # --dns-server IP: use specified IP
+                            dig_cmd = ['dig', f'@{dns_server}', '+short', domain]
                         
                         result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=5)
                         logger.debug(f"   DGA query: {domain} -> {result.returncode}")
@@ -415,7 +420,7 @@ def create_empty_log_result(category: str, domains: List[str]) -> Dict:
     }
 
 
-def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str], dns_server: str = '169.154.169.254') -> Dict:
+def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str], dns_server: str = None) -> Dict:
     """
     Execute DNS queries for a specific domain category on a single VM using batching.
     Processes domains in batches of CATEGORY_BATCH_SIZE for optimal performance.
@@ -444,10 +449,15 @@ def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, dom
         for domain in domains:
             try:
                 # Build dig command based on dns_server parameter
-                if dns_server and dns_server.lower() != 'legacy':
-                    dig_cmd = ["dig", f"@{dns_server}", domain, "+short"]
-                else:
+                if dns_server is None:
+                    # No --dns-server flag: use system default
                     dig_cmd = ["dig", domain, "+short"]
+                elif dns_server.lower() == 'default':
+                    # --dns-server default: use GCP internal DNS
+                    dig_cmd = ["dig", "@169.154.169.254", domain, "+short"]
+                else:
+                    # --dns-server IP: use specified IP
+                    dig_cmd = ["dig", f"@{dns_server}", domain, "+short"]
                 
                 result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=10)
                 status = "success" if result.returncode == 0 else "error"

