@@ -169,14 +169,14 @@ Examples:
     parser.add_argument(
         '--dns-server',
         type=str,
-        default='169.154.169.254',
-        help='DNS server IP for all dig queries (default: 169.154.169.254, use "legacy" for no DNS server specification)'
+        default='legacy',
+        help='DNS server IP for all dig queries (default: legacy mode with no DNS server specification, or specify IP like 169.154.169.254)'
     )
     
     return parser.parse_args()
 
 
-def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str = 'ladytisiphone.com', dnst_ip: str = '', dns_server: str = '169.154.169.254') -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]:
+def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str = 'ladytisiphone.com', dnst_ip: str = '', dns_server: str = 'legacy') -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]:
     """
     Generate additional domains based on execution mode.
     NOTE: This now only prepares domains - actual execution happens later with proper timing.
@@ -186,7 +186,7 @@ def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str
         dga_count (int): Number of DGA domains to generate
         dnst_domain (str): Domain for DNST simulation
         dnst_ip (str): IP for DNST queries
-        dns_server (str): DNS server to use for queries (default: 169.154.169.254, use 'legacy' for no DNS server)
+        dns_server (str): DNS server to use for queries (default: legacy mode with no DNS server specification)
         
     Returns:
         Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]: Additional domains, domain mapping, execution config
@@ -242,7 +242,7 @@ def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str
     return additional_domains, domain_mapping, execution_config
 
 
-def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]], dns_server: str = '169.154.169.254') -> Dict[str, Dict]:
+def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]], dns_server: str = 'legacy') -> Dict[str, Dict]:
     """
     Execute additional domain queries (DGA and DNST) with precise timing for log correlation.
     
@@ -415,7 +415,7 @@ def create_empty_log_result(category: str, domains: List[str]) -> Dict:
     }
 
 
-def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str], dns_server: str = '169.154.169.254') -> Dict:
+def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str], dns_server: str = 'legacy') -> Dict:
     """
     Execute DNS queries for a specific domain category on a single VM using batching.
     Processes domains in batches of CATEGORY_BATCH_SIZE for optimal performance.
