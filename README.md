@@ -30,19 +30,20 @@ cd ib-threat-detection-simulator/threat_detection_simulator && chmod +x run.sh &
 
 ## Usage Commands
 
-```bash
-# Quick test with detailed output
+# Debug mode with detailed CSV columns (includes DNS query details)
 ./run.sh debug basic
+./run.sh debug advanced
 
-# Production analysis 
+# Info mode with clean CSV columns (threat info only)  
+./run.sh info basic
 ./run.sh info advanced
 
-# With custom DNS server
+# With DNS server options
 ./run.sh debug basic --dns-server legacy
-```
+./run.sh info advanced --dns-server 8.8.8.8
 
 ## Parameters
-- **First Parameter**: `debug` | `info` | `warning` | `error` (log level) 
+- **First Parameter**: `debug` | `info` (log level) 
 - **Second Parameter**: `basic` | `advanced` (analysis mode)
 - **DNS Server**: `--dns-server legacy` (default), `--dns-server 8.8.8.8`, etc.
 

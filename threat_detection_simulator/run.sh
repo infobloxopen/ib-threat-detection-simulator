@@ -16,14 +16,13 @@
 #   ./run.sh <log_level> <mode> [--dns-server <server>]
 #
 # PARAMETERS:
-#   log_level:    debug | info | warning | error
-#   mode:         basic | advanced | comprehensive
+#   log_level:    debug | info
+#   mode:         basic | advanced
 #   --dns-server: Optional DNS server configuration (e.g., 'legacy')
 #
 # EXAMPLES:
 #   ./run.sh debug basic                    # Debug level + basic mode
 #   ./run.sh info advanced --dns-server legacy  # Info level + advanced mode + legacy DNS
-#   ./run.sh warning comprehensive         # Warning level + comprehensive mode
 
 # Color codes for output
 RED='\033[0;31m'
@@ -77,22 +76,22 @@ validate_arguments() {
     
     # Validate log level
     case $log_level in
-        debug|info|warning|error)
+        debug|info)
             ;;
         *)
             print_error "Invalid log level: $log_level"
-            echo "Valid options: debug, info, warning, error"
+            echo "Valid options: debug, info"
             exit 1
             ;;
     esac
     
     # Validate mode
     case $mode in
-        basic|advanced|comprehensive)
+        basic|advanced)
             ;;
         *)
             print_error "Invalid mode: $mode"
-            echo "Valid options: basic, advanced, comprehensive"
+            echo "Valid options: basic, advanced"
             exit 1
             ;;
     esac
@@ -128,14 +127,13 @@ main() {
         echo "Usage: $0 <log_level> <mode> [--dns-server <server>]"
         echo
         echo "Parameters:"
-        echo "  log_level:    debug | info | warning | error"
-        echo "  mode:         basic | advanced | comprehensive"
+        echo "  log_level:    debug | info"
+        echo "  mode:         basic | advanced"
         echo "  --dns-server: Optional DNS server configuration (e.g., 'legacy')"
         echo
         echo "Examples:"
         echo "  $0 debug basic"
         echo "  $0 info advanced --dns-server legacy"
-        echo "  $0 warning comprehensive --dns-server custom"
         echo
         exit 1
     fi
@@ -227,10 +225,21 @@ main() {
     # Install required packages with intelligent checking
     install_packages_smart
 
+    # Map log level to output format
+    local output_format=""
+    case $log_level in
+        debug)
+            output_format="advanced"  # Debug log level uses advanced output format (includes DNS details)
+            ;;
+        info)
+            output_format="basic"     # Info log level uses basic output format (threat info only)
+            ;;
+    esac
+
     # Display execution parameters
     echo
     echo -e "${CYAN}🎯 Mode: $mode${NC}"
-    echo -e "${CYAN}📊 Output Format: advanced${NC}"
+    echo -e "${CYAN}📊 Output Format: $output_format${NC}"
     if [ -n "$dns_server" ]; then
         echo -e "${CYAN}🌐 DNS Server: $dns_server${NC}"
     fi
@@ -239,7 +248,7 @@ main() {
     # Build command arguments
     local cmd_args=(
         "--mode" "$mode"
-        "--output-format" "advanced"
+        "--output-format" "$output_format"
     )
     
     # Add DNS server argument if provided
