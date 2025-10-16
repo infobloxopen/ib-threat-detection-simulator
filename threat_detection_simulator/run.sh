@@ -234,6 +234,10 @@ main() {
         info)
             output_format="basic"     # Info log level uses basic output format (threat info only)
             ;;
+        *)
+            echo -e "${RED}❌ Error: Unknown log level '$log_level'.${NC}"
+            exit 1
+            ;;
     esac
 
     # Display execution parameters
