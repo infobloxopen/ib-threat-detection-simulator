@@ -115,6 +115,98 @@ cleanup() {
 # Set trap to run cleanup on script exit
 trap cleanup EXIT
 
+preflight_checks() {
+    if [ "$SKIP_PREFLIGHT" = "1" ]; then
+        print_warning "Skipping preflight checks (SKIP_PREFLIGHT=1)"
+        return 0
+    fi
+
+    echo -e "${CYAN}🔍 Running preflight checks...${NC}"
+
+    local errors=0
+
+    # 1. Python version
+    if command -v python3 >/dev/null 2>&1; then
+        pyver=$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "0.0")
+        major=${pyver%%.*}; minor=${pyver#*.}
+        if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 8 ]; }; then
+            print_error "Python 3.8+ required, found $pyver"
+            errors=$((errors+1))
+        else
+            print_status "Python version OK: $pyver"
+        fi
+    else
+        print_error "python3 not found in PATH"
+        errors=$((errors+1))
+    fi
+
+    # 2. dig availability
+    if command -v dig >/dev/null 2>&1; then
+        print_status "dig found: $(command -v dig)"
+    else
+        print_error "dig command not found (install dnsutils / bind-tools)"
+        errors=$((errors+1))
+    fi
+
+    # 3. gcloud CLI
+    if command -v gcloud >/dev/null 2>&1; then
+        print_status "gcloud found: $(command -v gcloud)"
+    else
+        print_error "gcloud CLI not found (install Google Cloud SDK)"
+        errors=$((errors+1))
+    fi
+
+    # 4. Metadata server accessibility (only if curl present)
+    if command -v curl >/dev/null 2>&1; then
+        if curl -s -H "Metadata-Flavor: Google" --connect-timeout 2 http://metadata.google.internal/computeMetadata/v1/instance/id >/dev/null; then
+            print_status "Metadata server reachable"
+        else
+            print_error "Cannot reach metadata server (are you on GCE VM?)"
+            errors=$((errors+1))
+        fi
+    else
+        print_warning "curl not installed; skipping metadata reachability test"
+    fi
+
+    # 5. Service account email & scopes
+    local sa_email=""
+    if command -v curl >/dev/null 2>&1; then
+        sa_email=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email || true)
+        if [ -n "$sa_email" ]; then
+            print_status "Service Account: $sa_email"
+        else
+            print_error "Unable to retrieve service account email from metadata"
+            errors=$((errors+1))
+        fi
+    fi
+
+    # 6. Logging API permission quick test (optional; tolerate failure but warn)
+    if command -v gcloud >/dev/null 2>&1; then
+        if gcloud logging read 'timestamp>="-5m"' --limit=1 --quiet >/dev/null 2>&1; then
+            print_status "Cloud Logging read access OK"
+        else
+            print_warning "Cloud Logging read test failed (may lack roles/logging.viewer or project not set)"
+        fi
+    fi
+
+    # 7. Verify network DNS path (attempt a metadata DNS query)
+    if command -v dig >/dev/null 2>&1; then
+        if dig @169.254.169.254 example.com +short >/dev/null 2>&1; then
+            print_status "VPC DNS query successful"
+        else
+            print_warning "DNS via 169.254.169.254 failed (custom resolver?)"
+        fi
+    fi
+
+    # Summary
+    if [ $errors -gt 0 ]; then
+        print_error "Preflight failed with $errors error(s). Fix issues or set SKIP_PREFLIGHT=1 to override."
+        exit 2
+    else
+        print_status "All critical preflight checks passed"
+    fi
+}
+
 # Main execution function
 main() {
     echo
@@ -222,7 +314,10 @@ main() {
         return 0
     }
 
-    # Install required packages with intelligent checking
+    # Preflight environment & dependency checks
+    preflight_checks
+
+    # Install required packages with intelligent checking (after preflight)
     install_packages_smart
 
     # Map log level to output format
