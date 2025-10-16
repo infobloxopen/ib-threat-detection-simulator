@@ -15,7 +15,7 @@ gcloud compute scp --recurse threat_detection_simulator/ VM_NAME:~/ --zone=ZONE 
 
 # Run analysis
 gcloud compute ssh VM_NAME --zone=ZONE --tunnel-through-iap
-cd threat_detection_simulator && chmod +x run.sh && ./run.sh debug basic
+cd ib-threat-detection-simulator/threat_detection_simulator && chmod +x run.sh && ./run.sh debug basic
 ```
 
 ## Usage Commands
@@ -25,15 +25,15 @@ cd threat_detection_simulator && chmod +x run.sh && ./run.sh debug basic
 ./run.sh debug basic
 
 # Production analysis 
-./run.sh normal advanced
+./run.sh info advanced
 
 # With custom DNS server
 ./run.sh debug basic --dns-server legacy
 ```
 
 ## Parameters
-- **First Parameter**: `debug` (detailed output) or `normal` (clean output) 
-- **Second Parameter**: `basic` (existing domains) or `advanced` (includes DGA/DNST)
+- **First Parameter**: `debug` | `info` | `warning` | `error` (log level) 
+- **Second Parameter**: `basic` | `advanced` | `comprehensive` (analysis mode)
 - **DNS Server**: `--dns-server legacy` (default), `--dns-server 8.8.8.8`, etc.
 
 ## Output
@@ -46,10 +46,10 @@ The tool generates analysis files in `category_output/`:
 ### Sample CSV Output
 ```csv
 Domain Category,Client DNS Query Domain,Total Threat Count,Detection Rate (%)
-Phishing,50,38,76.00
+Phishing,50,50,100.00
 DGA_Malware,15,15,100.00
-Malicious_Domains,50,35,70.00
-TOTAL,115,88,76.52
+Malicious_Domains,50,50,100.00
+TOTAL,115,115,100.00
 ```
 
 ## VM Setup Requirements
