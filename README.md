@@ -9,13 +9,23 @@ DNS-based threat detection testing tool for GCP environments.
 - Python 3.8+
 
 ### Deploy and Run
+
+#### Method 1: Direct File Copy
 ```bash
-# Copy to VM
+# Copy specific folder to VM
 gcloud compute scp --recurse threat_detection_simulator/ VM_NAME:~/ --zone=ZONE --tunnel-through-iap
 
 # Run analysis
 gcloud compute ssh VM_NAME --zone=ZONE --tunnel-through-iap
 cd threat_detection_simulator && chmod +x run.sh && ./run.sh debug basic
+```
+
+#### Method 2: Clone Repository
+```bash
+# Clone repository to VM
+gcloud compute ssh VM_NAME --zone=ZONE --tunnel-through-iap
+git clone https://github.com/infobloxopen/ib-threat-detection-simulator.git
+cd ib-threat-detection-simulator/threat_detection_simulator && chmod +x run.sh && ./run.sh debug basic
 ```
 
 ## Usage Commands
@@ -25,15 +35,15 @@ cd threat_detection_simulator && chmod +x run.sh && ./run.sh debug basic
 ./run.sh debug basic
 
 # Production analysis 
-./run.sh normal advanced
+./run.sh info advanced
 
 # With custom DNS server
 ./run.sh debug basic --dns-server legacy
 ```
 
 ## Parameters
-- **First Parameter**: `debug` (detailed output) or `normal` (clean output) 
-- **Second Parameter**: `basic` (existing domains) or `advanced` (includes DGA/DNST)
+- **First Parameter**: `debug` | `info` | `warning` | `error` (log level) 
+- **Second Parameter**: `basic` | `advanced` (analysis mode)
 - **DNS Server**: `--dns-server legacy` (default), `--dns-server 8.8.8.8`, etc.
 
 ## Output
@@ -46,10 +56,10 @@ The tool generates analysis files in `category_output/`:
 ### Sample CSV Output
 ```csv
 Domain Category,Client DNS Query Domain,Total Threat Count,Detection Rate (%)
-Phishing,50,38,76.00
+Phishing,50,50,100.00
 DGA_Malware,15,15,100.00
-Malicious_Domains,50,35,70.00
-TOTAL,115,88,76.52
+Malicious_Domains,50,50,100.00
+TOTAL,115,115,100.00
 ```
 
 ## VM Setup Requirements
@@ -88,7 +98,7 @@ gcloud compute instances describe VM_NAME --zone=ZONE \
 ```
 
 ### Script Timeout (>10 minutes)
-The script has a 10-minute timeout. For slower VMs or regions, this is normal for comprehensive analysis modes.
+The script has a 10-minute timeout. For slower VMs or regions, this is normal for advanced analysis modes.
 
 ### Legacy DNS Mode
 If DNS queries fail, try legacy mode:
