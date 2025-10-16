@@ -39,13 +39,13 @@ cd ib-threat-detection-simulator/threat_detection_simulator && chmod +x run.sh &
 ./run.sh info advanced
 
 # With DNS server options
-./run.sh debug basic --dns-server legacy
+./run.sh debug basic
 ./run.sh info advanced --dns-server 8.8.8.8
 
 ## Parameters
 - **First Parameter**: `debug` | `info` (log level) 
 - **Second Parameter**: `basic` | `advanced` (analysis mode)
-- **DNS Server**: `--dns-server legacy` (default), `--dns-server 8.8.8.8`, etc.
+- **DNS Server**: `--dns-server 8.8.8.8`, etc.
 
 ## Output
 
@@ -100,9 +100,3 @@ gcloud compute instances describe VM_NAME --zone=ZONE \
 
 ### Script Timeout (>10 minutes)
 The script has a 10-minute timeout. For slower VMs or regions, this is normal for advanced analysis modes.
-
-### Legacy DNS Mode
-If DNS queries fail, try legacy mode:
-```bash
-./run.sh debug basic --dns-server legacy
-```
