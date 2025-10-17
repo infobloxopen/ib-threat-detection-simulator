@@ -73,44 +73,14 @@ check_package() {
 
 # Function to validate arguments
 validate_arguments() {
-    local log_level=$1
-    local mode=$2
-    local dns_server=$3
-    local ttl=$4
+    local log_level="$1"
+    local mode="$2" 
+    local ttl="$3"
     
-    # Validate log level
-    case $log_level in
-        debug|info)
-            ;;
-        *)
-            print_error "Invalid log level: $log_level"
-            echo "Valid options: debug, info"
-            exit 1
-            ;;
-    esac
-    
-    # Validate mode
-    case $mode in
-        basic|advanced)
-            ;;
-        *)
-            print_error "Invalid mode: $mode"
-            echo "Valid options: basic, advanced"
-            exit 1
-            ;;
-    esac
-    
-    # DNS server validation is optional - any value is accepted
-    if [ -n "$dns_server" ]; then
-        print_info "Using custom DNS server configuration: $dns_server"
-    fi
-    
-    # TTL validation is optional - check if it's a valid positive integer
+    # Validate TTL only if provided (not empty)
     if [ -n "$ttl" ]; then
-        if [[ "$ttl" =~ ^[0-9]+$ ]] && [ "$ttl" -ge 0 ]; then
-            print_info "Using custom TTL for domain caching: $ttl seconds"
-        else
-            print_error "Invalid TTL value: $ttl (must be a non-negative integer)"
+        if ! [[ "$ttl" =~ ^[0-9]+$ ]] || [ "$ttl" -le 0 ]; then
+            print_error "TTL must be a positive integer"
             exit 1
         fi
     fi
@@ -132,9 +102,8 @@ trap cleanup EXIT
 preflight_checks() {
     local log_level=$1
     local mode=$2
-    local dns_server=$3
-    local ttl=$4
-    local output_format=$5
+    local ttl=$3
+    local output_format=$4
     
     if [ "$SKIP_PREFLIGHT" = "1" ]; then
         print_warning "Skipping preflight checks (SKIP_PREFLIGHT=1)"
@@ -149,11 +118,7 @@ preflight_checks() {
     echo -e "   Log Level:     ${log_level}"
     echo -e "   Mode:          ${mode}"
     echo -e "   Output Format: ${output_format}"
-    if [ -n "$dns_server" ]; then
-        echo -e "   DNS Server:    ${dns_server}"
-    else
-        echo -e "   DNS Server:    system default (typically 169.254.169.254 on GCP)"
-    fi
+    echo -e "   DNS Server:    Auto-detection enabled (system default → 169.254.169.254 fallback)"
     if [ -n "$ttl" ]; then
         echo -e "   Cache TTL:     ${ttl} seconds"
     else
@@ -256,29 +221,29 @@ main() {
     # Parse arguments
     if [ $# -lt 2 ]; then
         echo
-        echo "Usage: $0 <log_level> <mode> [--dns-server <server>] [--ttl <seconds>]"
+        echo "Usage: $0 <log_level> <mode> [--ttl <seconds>]"
         echo
         echo "Parameters:"
         echo "  log_level:    debug | info"
         echo "  mode:         basic | advanced"
-        echo "  --dns-server: Optional DNS server configuration (e.g., 'legacy')"
-        echo "  --ttl:        Optional TTL in seconds for domain caching (default: 600)"
+        echo "  --ttl:        Optional TTL in seconds for domain caching (default: 300)"
         echo
         echo "Examples:"
         echo "  $0 debug basic"
-        echo "  $0 info advanced --dns-server legacy"
+        echo "  $0 info advanced"
         echo "  $0 info basic --ttl 1800"
-        echo "  $0 debug advanced --dns-server legacy --ttl 300"
+        echo "  $0 debug advanced --ttl 300"
+        echo
+        echo "Note: DNS server is automatically detected (system default → 169.254.169.254 fallback)"
         echo
         exit 1
     fi
     
     local log_level=$1
     local mode=$2
-    local dns_server=""
     local ttl=""
     
-    # Parse optional arguments (--dns-server and --ttl can be in any order)
+    # Parse optional arguments (only --ttl now)
     local i=3
     while [ $i -le $# ]; do
         local arg="${!i}"
@@ -286,15 +251,6 @@ main() {
         local next_arg="${!next_i}"
         
         case $arg in
-            "--dns-server")
-                if [ -n "$next_arg" ] && [ $next_i -le $# ]; then
-                    dns_server="$next_arg"
-                    i=$((i + 2))
-                else
-                    print_error "--dns-server requires a value"
-                    exit 1
-                fi
-                ;;
             "--ttl")
                 if [ -n "$next_arg" ] && [ $next_i -le $# ]; then
                     ttl="$next_arg"
@@ -312,7 +268,7 @@ main() {
     done
     
     # Validate arguments
-    validate_arguments "$log_level" "$mode" "$dns_server" "$ttl"
+    validate_arguments "$log_level" "$mode" "$ttl"
 
     # Check if we're in the right directory
     if [ ! -f "category_analysis_script.py" ]; then
@@ -402,7 +358,7 @@ main() {
     esac
 
     # Preflight environment & dependency checks
-    preflight_checks "$log_level" "$mode" "$dns_server" "$ttl" "$output_format"
+    preflight_checks "$log_level" "$mode" "$ttl" "$output_format"
 
     # Install required packages with intelligent checking (after preflight)
     install_packages_smart
@@ -411,9 +367,7 @@ main() {
     echo
     echo -e "${CYAN}🎯 Mode: $mode${NC}"
     echo -e "${CYAN}📊 Output Format: $output_format${NC}"
-    if [ -n "$dns_server" ]; then
-        echo -e "${CYAN}🌐 DNS Server: $dns_server${NC}"
-    fi
+    echo -e "${CYAN}🌐 DNS: Auto-detection enabled (system default → 169.254.169.254 fallback)${NC}"
     if [ -n "$ttl" ]; then
         echo -e "${CYAN}⏰ Domain Cache TTL: $ttl seconds${NC}"
     fi
@@ -424,11 +378,6 @@ main() {
         "--mode" "$mode"
         "--output-format" "$output_format"
     )
-    
-    # Add DNS server argument if provided
-    if [ -n "$dns_server" ]; then
-        cmd_args+=("--dns-server" "$dns_server")
-    fi
     
     # Add TTL argument if provided
     if [ -n "$ttl" ]; then

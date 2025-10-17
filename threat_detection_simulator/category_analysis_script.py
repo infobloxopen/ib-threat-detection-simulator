@@ -135,7 +135,7 @@ Examples:
 Domain Caching (--ttl):
   - Tracks used domains and avoids reusing them within TTL period
   - Creates cache file in category_output/ with domains grouped by category and timestamps
-  - Default TTL: 600 seconds (10 minutes)
+  - Default TTL: 300 seconds (5 minutes)
   - Set --ttl 0 to disable caching and allow immediate domain reuse
         """)
     
@@ -175,20 +175,122 @@ Domain Caching (--ttl):
     )
     
     parser.add_argument(
-        '--dns-server',
-        type=str,
-        default='legacy',
-        help='DNS server IP for all dig queries (default: legacy mode with no DNS server specification, or specify IP like 169.154.169.254)'
-    )
-    
-    parser.add_argument(
         '--ttl',
         type=int,
-        default=600,
-        help='TTL in seconds to avoid reusing recently tested domains (default: 600 seconds = 10 minutes)'
+        default=300,
+        help='TTL in seconds to avoid reusing recently tested domains (default: 300 seconds = 5 minutes)'
     )
     
     return parser.parse_args()
+
+
+def detect_best_dns_server() -> str:
+    """
+    Detect the best DNS server to use by testing system default first, then fallback to GCP DNS.
+    
+    Returns:
+        str: The best DNS server to use ('system' for default, or IP address)
+    """
+    import subprocess
+    
+    # Test 1: Try system default DNS (no @ specified)
+    try:
+        logger.info("🔍 Testing system default DNS resolver...")
+        result = subprocess.run(['dig', 'example.com', '+short'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            logger.info("✅ System default DNS working correctly")
+            return 'system'
+        else:
+            logger.warning(f"⚠️ System default DNS failed: {result.stderr.strip()}")
+    except Exception as e:
+        logger.warning(f"⚠️ System default DNS test failed: {e}")
+    
+    # Test 2: Fallback to GCP metadata server DNS
+    try:
+        logger.info("🔍 Testing fallback DNS (169.254.169.254)...")
+        result = subprocess.run(['dig', '@169.254.169.254', 'example.com', '+short'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            logger.info("✅ Fallback DNS (169.254.169.254) working correctly")
+            return '169.254.169.254'
+        else:
+            logger.warning(f"⚠️ Fallback DNS failed: {result.stderr.strip()}")
+    except Exception as e:
+        logger.warning(f"⚠️ Fallback DNS test failed: {e}")
+    
+    # If both fail, still return system default as last resort
+    logger.error("❌ Both DNS tests failed, using system default as last resort")
+    return 'system'
+
+
+def execute_dig_with_fallback(domain: str, dns_server: str) -> dict:
+    """
+    Execute dig command with error logging and fallback logic.
+    
+    Args:
+        domain (str): Domain to query
+        dns_server (str): DNS server to use ('system' or IP address)
+        
+    Returns:
+        dict: Result with status, output, and error information
+    """
+    import subprocess
+    
+    # Build dig command
+    if dns_server == 'system':
+        dig_cmd = ['dig', domain, '+short']
+        server_desc = "system default"
+    else:
+        dig_cmd = ['dig', f'@{dns_server}', domain, '+short']
+        server_desc = dns_server
+    
+    try:
+        result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "output": result.stdout.strip(),
+                "error": "",
+                "dns_server": dns_server
+            }
+        else:
+            # Log the failure
+            error_msg = result.stderr.strip()
+            logger.warning(f"🔍 DNS query failed for {domain} using {server_desc}: {error_msg}")
+            
+            # Check for common error patterns
+            if "timed out" in error_msg.lower():
+                logger.warning(f"⏰ DNS timeout for {domain} on {server_desc}")
+            elif "connection refused" in error_msg.lower():
+                logger.warning(f"🚫 DNS connection refused for {domain} on {server_desc}")
+            
+            return {
+                "status": "error",
+                "output": "",
+                "error": error_msg,
+                "dns_server": dns_server
+            }
+            
+    except subprocess.TimeoutExpired:
+        error_msg = f"DNS query timeout after 10 seconds"
+        logger.warning(f"⏰ {error_msg} for {domain} using {server_desc}")
+        return {
+            "status": "error",
+            "output": "",
+            "error": error_msg,
+            "dns_server": dns_server
+        }
+    except Exception as e:
+        error_msg = str(e)
+        logger.warning(f"❌ DNS query exception for {domain} using {server_desc}: {error_msg}")
+        return {
+            "status": "error",
+            "output": "",
+            "error": error_msg,
+            "dns_server": dns_server
+        }
 
 
 def load_domain_cache(output_dir: str, ttl_seconds: int) -> Dict[str, List[str]]:
@@ -342,7 +444,7 @@ def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str
     return additional_domains, domain_mapping, execution_config
 
 
-def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]], dns_server: str = 'legacy') -> Dict[str, Dict]:
+def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]]) -> Dict[str, Dict]:
     """
     Execute additional domain queries (DGA and DNST) with precise timing for log correlation.
     
@@ -355,6 +457,9 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
         Dict[str, Dict]: Execution timing results for each additional category
     """
     execution_results = {}
+    # Detect best DNS server to use
+    dns_server = detect_best_dns_server()
+    logger.info(f"🌐 Using DNS server: {dns_server if dns_server != 'system' else 'system default'}")
     
     for category, config in execution_config.items():
         if not config.get('execution_needed', False):
@@ -371,19 +476,12 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 # Execute DNS queries for DGA domains
                 logger.info(f"🔍 Executing DNS queries for {len(domains)} DGA domains...")
                 for domain in domains:
-                    # Execute local dig query
-                    try:
-                        import subprocess
-                        # Build dig command based on dns_server parameter
-                        if dns_server and dns_server.lower() != 'legacy':
-                            dig_cmd = ['dig', f'@{dns_server}', '+short', domain]
-                        else:
-                            dig_cmd = ['dig', '+short', domain]
-                        
-                        result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=5)
-                        logger.debug(f"   DGA query: {domain} -> {result.returncode}")
-                    except Exception as e:
-                        logger.debug(f"   DGA query failed: {domain} -> {e}")
+                    # Execute DNS query with fallback and logging
+                    result = execute_dig_with_fallback(domain, dns_server)
+                    if result['status'] == 'success':
+                        logger.debug(f"   DGA query: {domain} -> success")
+                    else:
+                        logger.debug(f"   DGA query: {domain} -> failed: {result['error']}")
                 
                 end_time = datetime.utcnow()
                 logger.info(f"✅ Completed DGA queries in {(end_time - start_time).total_seconds():.1f} seconds")
@@ -394,7 +492,7 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 anycast_ip = config['anycast_ip']
                 
                 logger.info(f"🔗 Executing DNST tunneling simulation for: {base_domain}")
-                dnst_result = generate_dnst_data_exfiltration(domain=base_domain, anycast_ip=anycast_ip, dns_server=dns_server)
+                dnst_result = generate_dnst_data_exfiltration(domain=base_domain, anycast_ip=anycast_ip, dns_server=dns_server if dns_server != 'system' else '169.254.169.254')
                 
                 # Update the category with the actual DNST domain
                 categories[category] = [dnst_result]
@@ -544,7 +642,7 @@ def create_empty_log_result(category: str, domains: List[str]) -> Dict:
     }
 
 
-def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str], dns_server: str = 'legacy') -> Dict:
+def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str]) -> Dict:
     """
     Execute DNS queries for a specific domain category on a single VM using batching.
     Processes domains in batches of CATEGORY_BATCH_SIZE for optimal performance.
@@ -554,12 +652,15 @@ def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, dom
         vm_config (dict): VM configuration
         category (str): Domain category name
         domains (list): List of domains to query for this category
-        dns_server (str): DNS server IP to use for queries
         
     Returns:
         dict: Query execution results with timing information
     """
     try:
+        # Detect best DNS server for this category
+        dns_server = detect_best_dns_server()
+        logger.info(f"🌐 Using DNS server for {category}: {dns_server if dns_server != 'system' else 'system default'}")
+        
         start_time = datetime.utcnow()
         logger.info(f"🚀 Starting DNS queries for category '{category}' on {vm_id}")
         logger.info(f"📋 VM: {vm_config['name']} in {vm_config['zone']}")
@@ -571,22 +672,9 @@ def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, dom
         # Execute dig queries locally for all domains
         all_dig_results = {}
         for domain in domains:
-            try:
-                # Build dig command based on dns_server parameter
-                if dns_server and dns_server.lower() != 'legacy':
-                    dig_cmd = ["dig", f"@{dns_server}", domain, "+short"]
-                else:
-                    dig_cmd = ["dig", domain, "+short"]
-                
-                result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=10)
-                status = "success" if result.returncode == 0 else "error"
-                all_dig_results[domain] = {
-                    "status": status,
-                    "output": result.stdout.strip(),
-                    "error": result.stderr.strip() if result.returncode != 0 else ""
-                }
-            except Exception as e:
-                all_dig_results[domain] = {"status": "error", "output": "", "error": str(e)}
+            # Use the new execute_dig_with_fallback function
+            result = execute_dig_with_fallback(domain, dns_server)
+            all_dig_results[domain] = result
 
         end_time = datetime.utcnow()
         execution_time = (end_time - start_time).total_seconds()
@@ -1291,8 +1379,7 @@ def main():
             mode=args.mode,
             dga_count=args.dga_count,
             dnst_domain=args.dnst_domain,
-            dnst_ip=args.dnst_ip,
-            dns_server=args.dns_server
+            dnst_ip=args.dnst_ip
         )
         
         # Merge additional domains with existing categories
@@ -1324,7 +1411,7 @@ def main():
         # First execute additional domains (DGA/DNST) with precise timing
         if execution_config:
             logger.info(f"\n🎯 Executing additional domain queries with precise timing...")
-            additional_execution_results = execute_additional_domains(execution_config, categories, args.dns_server)
+            additional_execution_results = execute_additional_domains(execution_config, categories)
             flush_logs()
         
         # Then execute regular category domains
@@ -1354,7 +1441,7 @@ def main():
                     query_results.append(result)
                     logger.info(f"✅ Used precise timing for {category}: {exec_result['execution_time']:.1f}s")
                     continue
-                result = execute_queries_for_category(vm_id, vm_config, category, domains, args.dns_server)
+                result = execute_queries_for_category(vm_id, vm_config, category, domains)
                 query_results.append(result)
             except Exception as e:
                 logger.error(f"❌ Category {category} query execution failed: {e}")
