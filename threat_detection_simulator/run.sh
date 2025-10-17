@@ -13,16 +13,19 @@
 # 3. This script will automatically install: python3-venv, python3-pip
 #
 # USAGE:
-#   ./run.sh <log_level> <mode> [--dns-server <server>]
+#   ./run.sh <log_level> <mode> [--dns-server <server>] [--ttl <seconds>]
 #
 # PARAMETERS:
 #   log_level:    debug | info
 #   mode:         basic | advanced
 #   --dns-server: Optional DNS server configuration (e.g., 'legacy')
+#   --ttl:        Optional TTL in seconds for domain caching (default: 600 = 10 minutes)
 #
 # EXAMPLES:
-#   ./run.sh debug basic                    # Debug level + basic mode
+#   ./run.sh debug basic                         # Debug level + basic mode
 #   ./run.sh info advanced --dns-server legacy  # Info level + advanced mode + legacy DNS
+#   ./run.sh info basic --ttl 1800              # Info level + basic mode + 30-minute cache TTL
+#   ./run.sh debug advanced --dns-server legacy --ttl 300  # All options combined
 
 # Color codes for output
 RED='\033[0;31m'
@@ -73,6 +76,7 @@ validate_arguments() {
     local log_level=$1
     local mode=$2
     local dns_server=$3
+    local ttl=$4
     
     # Validate log level
     case $log_level in
@@ -100,6 +104,16 @@ validate_arguments() {
     if [ -n "$dns_server" ]; then
         print_info "Using custom DNS server configuration: $dns_server"
     fi
+    
+    # TTL validation is optional - check if it's a valid positive integer
+    if [ -n "$ttl" ]; then
+        if [[ "$ttl" =~ ^[0-9]+$ ]] && [ "$ttl" -ge 0 ]; then
+            print_info "Using custom TTL for domain caching: $ttl seconds"
+        else
+            print_error "Invalid TTL value: $ttl (must be a non-negative integer)"
+            exit 1
+        fi
+    fi
 }
 
 # Cleanup function
@@ -116,12 +130,38 @@ cleanup() {
 trap cleanup EXIT
 
 preflight_checks() {
+    local log_level=$1
+    local mode=$2
+    local dns_server=$3
+    local ttl=$4
+    local output_format=$5
+    
     if [ "$SKIP_PREFLIGHT" = "1" ]; then
         print_warning "Skipping preflight checks (SKIP_PREFLIGHT=1)"
         return 0
     fi
 
     echo -e "${CYAN}🔍 Running preflight checks...${NC}"
+    echo
+    
+    # Display configuration summary
+    echo -e "${PURPLE}📋 Configuration Summary:${NC}"
+    echo -e "   Log Level:     ${log_level}"
+    echo -e "   Mode:          ${mode}"
+    echo -e "   Output Format: ${output_format}"
+    if [ -n "$dns_server" ]; then
+        echo -e "   DNS Server:    ${dns_server}"
+    else
+        echo -e "   DNS Server:    system default (typically 169.254.169.254 on GCP)"
+    fi
+    if [ -n "$ttl" ]; then
+        echo -e "   Cache TTL:     ${ttl} seconds"
+    else
+        echo -e "   Cache TTL:     600 seconds (default)"
+    fi
+    echo
+    
+    echo -e "${CYAN}🔧 Environment Checks:${NC}"
 
     local errors=0
 
@@ -216,16 +256,19 @@ main() {
     # Parse arguments
     if [ $# -lt 2 ]; then
         echo
-        echo "Usage: $0 <log_level> <mode> [--dns-server <server>]"
+        echo "Usage: $0 <log_level> <mode> [--dns-server <server>] [--ttl <seconds>]"
         echo
         echo "Parameters:"
         echo "  log_level:    debug | info"
         echo "  mode:         basic | advanced"
         echo "  --dns-server: Optional DNS server configuration (e.g., 'legacy')"
+        echo "  --ttl:        Optional TTL in seconds for domain caching (default: 600)"
         echo
         echo "Examples:"
         echo "  $0 debug basic"
         echo "  $0 info advanced --dns-server legacy"
+        echo "  $0 info basic --ttl 1800"
+        echo "  $0 debug advanced --dns-server legacy --ttl 300"
         echo
         exit 1
     fi
@@ -233,14 +276,43 @@ main() {
     local log_level=$1
     local mode=$2
     local dns_server=""
+    local ttl=""
     
-    # Parse optional DNS server argument
-    if [ $# -ge 4 ] && [ "$3" = "--dns-server" ]; then
-        dns_server=$4
-    fi
+    # Parse optional arguments (--dns-server and --ttl can be in any order)
+    local i=3
+    while [ $i -le $# ]; do
+        local arg="${!i}"
+        local next_i=$((i + 1))
+        local next_arg="${!next_i}"
+        
+        case $arg in
+            "--dns-server")
+                if [ -n "$next_arg" ] && [ $next_i -le $# ]; then
+                    dns_server="$next_arg"
+                    i=$((i + 2))
+                else
+                    print_error "--dns-server requires a value"
+                    exit 1
+                fi
+                ;;
+            "--ttl")
+                if [ -n "$next_arg" ] && [ $next_i -le $# ]; then
+                    ttl="$next_arg"
+                    i=$((i + 2))
+                else
+                    print_error "--ttl requires a value"
+                    exit 1
+                fi
+                ;;
+            *)
+                print_error "Unknown argument: $arg"
+                exit 1
+                ;;
+        esac
+    done
     
     # Validate arguments
-    validate_arguments "$log_level" "$mode" "$dns_server"
+    validate_arguments "$log_level" "$mode" "$dns_server" "$ttl"
 
     # Check if we're in the right directory
     if [ ! -f "category_analysis_script.py" ]; then
@@ -314,12 +386,6 @@ main() {
         return 0
     }
 
-    # Preflight environment & dependency checks
-    preflight_checks
-
-    # Install required packages with intelligent checking (after preflight)
-    install_packages_smart
-
     # Map log level to output format
     local output_format=""
     case $log_level in
@@ -335,12 +401,21 @@ main() {
             ;;
     esac
 
+    # Preflight environment & dependency checks
+    preflight_checks "$log_level" "$mode" "$dns_server" "$ttl" "$output_format"
+
+    # Install required packages with intelligent checking (after preflight)
+    install_packages_smart
+
     # Display execution parameters
     echo
     echo -e "${CYAN}🎯 Mode: $mode${NC}"
     echo -e "${CYAN}📊 Output Format: $output_format${NC}"
     if [ -n "$dns_server" ]; then
         echo -e "${CYAN}🌐 DNS Server: $dns_server${NC}"
+    fi
+    if [ -n "$ttl" ]; then
+        echo -e "${CYAN}⏰ Domain Cache TTL: $ttl seconds${NC}"
     fi
     echo -e "${CYAN}🔥 Executing threat simulation...${NC}"
     
@@ -353,6 +428,11 @@ main() {
     # Add DNS server argument if provided
     if [ -n "$dns_server" ]; then
         cmd_args+=("--dns-server" "$dns_server")
+    fi
+    
+    # Add TTL argument if provided
+    if [ -n "$ttl" ]; then
+        cmd_args+=("--ttl" "$ttl")
     fi
     
     # Execute the Python script with timeout protection
