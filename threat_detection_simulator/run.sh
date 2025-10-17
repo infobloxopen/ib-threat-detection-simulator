@@ -13,16 +13,19 @@
 # 3. This script will automatically install: python3-venv, python3-pip
 #
 # USAGE:
-#   ./run.sh <log_level> <mode> [--dns-server <server>]
+#   ./run.sh <log_level> <mode> [--dns-server <server>] [--ttl <seconds>]
 #
 # PARAMETERS:
 #   log_level:    debug | info
 #   mode:         basic | advanced
 #   --dns-server: Optional DNS server configuration (e.g., 'legacy')
+#   --ttl:        Optional TTL in seconds for domain caching (default: 600 = 10 minutes)
 #
 # EXAMPLES:
-#   ./run.sh debug basic                    # Debug level + basic mode
+#   ./run.sh debug basic                         # Debug level + basic mode
 #   ./run.sh info advanced --dns-server legacy  # Info level + advanced mode + legacy DNS
+#   ./run.sh info basic --ttl 1800              # Info level + basic mode + 30-minute cache TTL
+#   ./run.sh debug advanced --dns-server legacy --ttl 300  # All options combined
 
 # Color codes for output
 RED='\033[0;31m'
@@ -70,35 +73,16 @@ check_package() {
 
 # Function to validate arguments
 validate_arguments() {
-    local log_level=$1
-    local mode=$2
-    local dns_server=$3
+    local log_level="$1"
+    local mode="$2" 
+    local ttl="$3"
     
-    # Validate log level
-    case $log_level in
-        debug|info)
-            ;;
-        *)
-            print_error "Invalid log level: $log_level"
-            echo "Valid options: debug, info"
+    # Validate TTL only if provided (not empty)
+    if [ -n "$ttl" ]; then
+        if ! [[ "$ttl" =~ ^[0-9]+$ ]] || [ "$ttl" -le 0 ]; then
+            print_error "TTL must be a positive integer"
             exit 1
-            ;;
-    esac
-    
-    # Validate mode
-    case $mode in
-        basic|advanced)
-            ;;
-        *)
-            print_error "Invalid mode: $mode"
-            echo "Valid options: basic, advanced"
-            exit 1
-            ;;
-    esac
-    
-    # DNS server validation is optional - any value is accepted
-    if [ -n "$dns_server" ]; then
-        print_info "Using custom DNS server configuration: $dns_server"
+        fi
     fi
 }
 
@@ -115,6 +99,119 @@ cleanup() {
 # Set trap to run cleanup on script exit
 trap cleanup EXIT
 
+preflight_checks() {
+    local log_level=$1
+    local mode=$2
+    local ttl=$3
+    local output_format=$4
+    
+    if [ "$SKIP_PREFLIGHT" = "1" ]; then
+        print_warning "Skipping preflight checks (SKIP_PREFLIGHT=1)"
+        return 0
+    fi
+
+    echo -e "${CYAN}🔍 Running preflight checks...${NC}"
+    echo
+    
+    # Display configuration summary
+    echo -e "${PURPLE}📋 Configuration Summary:${NC}"
+    echo -e "   Log Level:     ${log_level}"
+    echo -e "   Mode:          ${mode}"
+    echo -e "   Output Format: ${output_format}"
+    echo -e "   DNS Server:    Auto-detection enabled (system default → 169.254.169.254 fallback)"
+    if [ -n "$ttl" ]; then
+        echo -e "   Cache TTL:     ${ttl} seconds"
+    else
+        echo -e "   Cache TTL:     600 seconds (default)"
+    fi
+    echo
+    
+    echo -e "${CYAN}🔧 Environment Checks:${NC}"
+
+    local errors=0
+
+    # 1. Python version
+    if command -v python3 >/dev/null 2>&1; then
+        pyver=$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "0.0")
+        major=${pyver%%.*}; minor=${pyver#*.}
+        if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 8 ]; }; then
+            print_error "Python 3.8+ required, found $pyver"
+            errors=$((errors+1))
+        else
+            print_status "Python version OK: $pyver"
+        fi
+    else
+        print_error "python3 not found in PATH"
+        errors=$((errors+1))
+    fi
+
+    # 2. dig availability
+    if command -v dig >/dev/null 2>&1; then
+        print_status "dig found: $(command -v dig)"
+    else
+        print_error "dig command not found (install dnsutils / bind-tools)"
+        errors=$((errors+1))
+    fi
+
+    # 3. gcloud CLI
+    if command -v gcloud >/dev/null 2>&1; then
+        print_status "gcloud found: $(command -v gcloud)"
+    else
+        print_error "gcloud CLI not found (install Google Cloud SDK)"
+        errors=$((errors+1))
+    fi
+
+    # 4. Metadata server accessibility (only if curl present)
+    if command -v curl >/dev/null 2>&1; then
+        if curl -s -H "Metadata-Flavor: Google" --connect-timeout 2 http://metadata.google.internal/computeMetadata/v1/instance/id >/dev/null; then
+            print_status "Metadata server reachable"
+        else
+            print_error "Cannot reach metadata server (are you on GCE VM?)"
+            errors=$((errors+1))
+        fi
+    else
+        print_warning "curl not installed; skipping metadata reachability test"
+    fi
+
+    # 5. Service account email & scopes
+    local sa_email=""
+    if command -v curl >/dev/null 2>&1; then
+        sa_email=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email || true)
+        if [ -n "$sa_email" ]; then
+            print_status "Service Account: $sa_email"
+        else
+            print_error "Unable to retrieve service account email from metadata"
+            errors=$((errors+1))
+        fi
+    fi
+
+    # 6. Logging API permission quick test (optional; tolerate failure but warn)
+    if command -v gcloud >/dev/null 2>&1; then
+        if gcloud logging read 'timestamp>="-5m"' --limit=1 --quiet >/dev/null 2>&1; then
+            print_status "Cloud Logging read access OK"
+        else
+            print_warning "Cloud Logging read test failed (may lack roles/logging.viewer or project not set)"
+        fi
+    fi
+
+    # 7. Verify network DNS path (attempt a metadata DNS query)
+    if command -v dig >/dev/null 2>&1; then
+        if dig @169.254.169.254 example.com +short >/dev/null 2>&1; then
+            print_status "VPC DNS query successful"
+        else
+            print_warning "DNS via 169.254.169.254 failed (custom resolver?)"
+        fi
+    fi
+
+    # Summary
+    if [ $errors -gt 0 ]; then
+        print_error "Preflight failed with $errors error(s). Fix issues or set SKIP_PREFLIGHT=1 to override."
+        exit 2
+    else
+        print_status "All critical preflight checks passed"
+    fi
+}
+
 # Main execution function
 main() {
     echo
@@ -124,31 +221,54 @@ main() {
     # Parse arguments
     if [ $# -lt 2 ]; then
         echo
-        echo "Usage: $0 <log_level> <mode> [--dns-server <server>]"
+        echo "Usage: $0 <log_level> <mode> [--ttl <seconds>]"
         echo
         echo "Parameters:"
         echo "  log_level:    debug | info"
         echo "  mode:         basic | advanced"
-        echo "  --dns-server: Optional DNS server configuration (e.g., 'legacy')"
+        echo "  --ttl:        Optional TTL in seconds for domain caching (default: 300)"
         echo
         echo "Examples:"
         echo "  $0 debug basic"
-        echo "  $0 info advanced --dns-server legacy"
+        echo "  $0 info advanced"
+        echo "  $0 info basic --ttl 1800"
+        echo "  $0 debug advanced --ttl 300"
+        echo
+        echo "Note: DNS server is automatically detected (system default → 169.254.169.254 fallback)"
         echo
         exit 1
     fi
     
     local log_level=$1
     local mode=$2
-    local dns_server=""
+    local ttl=""
     
-    # Parse optional DNS server argument
-    if [ $# -ge 4 ] && [ "$3" = "--dns-server" ]; then
-        dns_server=$4
-    fi
+    # Parse optional arguments (only --ttl now)
+    local i=3
+    while [ $i -le $# ]; do
+        local arg="${!i}"
+        local next_i=$((i + 1))
+        local next_arg="${!next_i}"
+        
+        case $arg in
+            "--ttl")
+                if [ -n "$next_arg" ] && [ $next_i -le $# ]; then
+                    ttl="$next_arg"
+                    i=$((i + 2))
+                else
+                    print_error "--ttl requires a value"
+                    exit 1
+                fi
+                ;;
+            *)
+                print_error "Unknown argument: $arg"
+                exit 1
+                ;;
+        esac
+    done
     
     # Validate arguments
-    validate_arguments "$log_level" "$mode" "$dns_server"
+    validate_arguments "$log_level" "$mode" "$ttl"
 
     # Check if we're in the right directory
     if [ ! -f "category_analysis_script.py" ]; then
@@ -222,9 +342,6 @@ main() {
         return 0
     }
 
-    # Install required packages with intelligent checking
-    install_packages_smart
-
     # Map log level to output format
     local output_format=""
     case $log_level in
@@ -240,12 +357,19 @@ main() {
             ;;
     esac
 
+    # Preflight environment & dependency checks
+    preflight_checks "$log_level" "$mode" "$ttl" "$output_format"
+
+    # Install required packages with intelligent checking (after preflight)
+    install_packages_smart
+
     # Display execution parameters
     echo
     echo -e "${CYAN}🎯 Mode: $mode${NC}"
     echo -e "${CYAN}📊 Output Format: $output_format${NC}"
-    if [ -n "$dns_server" ]; then
-        echo -e "${CYAN}🌐 DNS Server: $dns_server${NC}"
+    echo -e "${CYAN}🌐 DNS: Auto-detection enabled (system default → 169.254.169.254 fallback)${NC}"
+    if [ -n "$ttl" ]; then
+        echo -e "${CYAN}⏰ Domain Cache TTL: $ttl seconds${NC}"
     fi
     echo -e "${CYAN}🔥 Executing threat simulation...${NC}"
     
@@ -255,9 +379,9 @@ main() {
         "--output-format" "$output_format"
     )
     
-    # Add DNS server argument if provided
-    if [ -n "$dns_server" ]; then
-        cmd_args+=("--dns-server" "$dns_server")
+    # Add TTL argument if provided
+    if [ -n "$ttl" ]; then
+        cmd_args+=("--ttl" "$ttl")
     fi
     
     # Execute the Python script with timeout protection

@@ -70,3 +70,5 @@ bin/
 # Logs
 *.log
 index.py
+*.gz
+*GUIDE.md
