@@ -62,6 +62,7 @@ logger = get_logger(__name__)
 CATEGORY_INDICATORS_FILE = "ib-base-category.json"
 CATEGORY_OUTPUT_CSV_FILE = "threat_detection_results.csv"
 CATEGORY_OUTPUT_DIR = "category_output"
+DOMAIN_CACHE_FILE = "domain_cache.json"
 
 # Domain sampling configuration
 MAX_DOMAINS_PER_CATEGORY = 50   # Reduced to 50 domains per category for better accuracy
@@ -129,6 +130,13 @@ Examples:
   python category_analysis_script.py --mode debug
   python category_analysis_script.py --mode basic --dga-count 20
   python category_analysis_script.py --mode advanced --dga-count 15 --dnst-domain ladytisiphone.com
+  python category_analysis_script.py --mode basic --ttl 1800  # Use 30-minute TTL for domain caching
+
+Domain Caching (--ttl):
+  - Tracks used domains and avoids reusing them within TTL period
+  - Creates cache file in category_output/ with domains grouped by category and timestamps
+  - Default TTL: 300 seconds (5 minutes)
+  - Set --ttl 0 to disable caching and allow immediate domain reuse
         """)
     
     parser.add_argument(
@@ -167,13 +175,207 @@ Examples:
     )
     
     parser.add_argument(
-        '--dns-server',
-        type=str,
-        default='legacy',
-        help='DNS server IP for all dig queries (default: legacy mode with no DNS server specification, or specify IP like 169.154.169.254)'
+        '--ttl',
+        type=int,
+        default=300,
+        help='TTL in seconds to avoid reusing recently tested domains (default: 300 seconds = 5 minutes)'
     )
     
     return parser.parse_args()
+
+
+def detect_best_dns_server() -> str:
+    """
+    Detect the best DNS server to use by testing system default first, then fallback to GCP DNS.
+    
+    Returns:
+        str: The best DNS server to use ('system' for default, or IP address)
+    """
+    import subprocess
+    
+    # Test 1: Try system default DNS (no @ specified)
+    try:
+        logger.info("🔍 Testing system default DNS resolver...")
+        result = subprocess.run(['dig', 'example.com', '+short'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            logger.info("✅ System default DNS working correctly")
+            return 'system'
+        else:
+            logger.warning(f"⚠️ System default DNS failed: {result.stderr.strip()}")
+    except Exception as e:
+        logger.warning(f"⚠️ System default DNS test failed: {e}")
+    
+    # Test 2: Fallback to GCP metadata server DNS
+    try:
+        logger.info("🔍 Testing fallback DNS (169.254.169.254)...")
+        result = subprocess.run(['dig', '@169.254.169.254', 'example.com', '+short'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            logger.info("✅ Fallback DNS (169.254.169.254) working correctly")
+            return '169.254.169.254'
+        else:
+            logger.warning(f"⚠️ Fallback DNS failed: {result.stderr.strip()}")
+    except Exception as e:
+        logger.warning(f"⚠️ Fallback DNS test failed: {e}")
+    
+    # If both fail, still return system default as last resort
+    logger.error("❌ Both DNS tests failed, using system default as last resort")
+    return 'system'
+
+
+def execute_dig_with_fallback(domain: str, dns_server: str) -> dict:
+    """
+    Execute dig command with error logging and fallback logic.
+    
+    Args:
+        domain (str): Domain to query
+        dns_server (str): DNS server to use ('system' or IP address)
+        
+    Returns:
+        dict: Result with status, output, and error information
+    """
+    import subprocess
+    
+    # Build dig command
+    if dns_server == 'system':
+        dig_cmd = ['dig', domain, '+short']
+        server_desc = "system default"
+    else:
+        dig_cmd = ['dig', f'@{dns_server}', domain, '+short']
+        server_desc = dns_server
+    
+    try:
+        result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "output": result.stdout.strip(),
+                "error": "",
+                "dns_server": dns_server
+            }
+        else:
+            # Log the failure
+            error_msg = result.stderr.strip()
+            logger.warning(f"🔍 DNS query failed for {domain} using {server_desc}: {error_msg}")
+            
+            # Check for common error patterns
+            if "timed out" in error_msg.lower():
+                logger.warning(f"⏰ DNS timeout for {domain} on {server_desc}")
+            elif "connection refused" in error_msg.lower():
+                logger.warning(f"🚫 DNS connection refused for {domain} on {server_desc}")
+            
+            return {
+                "status": "error",
+                "output": "",
+                "error": error_msg,
+                "dns_server": dns_server
+            }
+            
+    except subprocess.TimeoutExpired:
+        error_msg = f"DNS query timeout after 10 seconds"
+        logger.warning(f"⏰ {error_msg} for {domain} using {server_desc}")
+        return {
+            "status": "error",
+            "output": "",
+            "error": error_msg,
+            "dns_server": dns_server
+        }
+    except Exception as e:
+        error_msg = str(e)
+        logger.warning(f"❌ DNS query exception for {domain} using {server_desc}: {error_msg}")
+        return {
+            "status": "error",
+            "output": "",
+            "error": error_msg,
+            "dns_server": dns_server
+        }
+
+
+def load_domain_cache(output_dir: str, ttl_seconds: int) -> Dict[str, List[str]]:
+    """
+    Load domain cache and return still-valid cached domains per category.
+    
+    Args:
+        output_dir (str): Output directory where cache file is stored
+        ttl_seconds (int): TTL in seconds for cache validity
+        
+    Returns:
+        Dict[str, List[str]]: Dictionary of valid cached domains per category
+    """
+    cache_path = os.path.join(output_dir, DOMAIN_CACHE_FILE)
+    valid_cached_domains = {}
+    
+    if not os.path.exists(cache_path):
+        logger.info("📄 No domain cache file found, starting fresh")
+        return valid_cached_domains
+    
+    try:
+        with open(cache_path, 'r') as f:
+            cache_data = json.load(f)
+        
+        current_time = datetime.now()
+        for category, category_data in cache_data.items():
+            if 'domains' not in category_data or 'timestamp' not in category_data:
+                continue
+                
+            # Parse the timestamp and check if still valid
+            cache_timestamp = datetime.fromisoformat(category_data['timestamp'])
+            time_diff = (current_time - cache_timestamp).total_seconds()
+            
+            if time_diff < ttl_seconds:
+                valid_cached_domains[category] = category_data['domains']
+                logger.info(f"📚 Cache HIT for {category}: {len(category_data['domains'])} domains still valid (cached {time_diff:.0f}s ago)")
+            else:
+                logger.info(f"⏰ Cache EXPIRED for {category}: {len(category_data['domains'])} domains too old ({time_diff:.0f}s > {ttl_seconds}s)")
+        
+        if valid_cached_domains:
+            total_cached = sum(len(domains) for domains in valid_cached_domains.values())
+            logger.info(f"✅ Loaded cache with {total_cached} valid domains across {len(valid_cached_domains)} categories")
+        else:
+            logger.info("🆕 All cached domains expired, starting fresh")
+            
+    except (json.JSONDecodeError, ValueError, KeyError) as e:
+        logger.warning(f"⚠️ Cache file corrupted, ignoring: {e}")
+    except Exception as e:
+        logger.warning(f"⚠️ Error reading cache file, ignoring: {e}")
+    
+    return valid_cached_domains
+
+
+def save_domain_cache(output_dir: str, used_domains: Dict[str, List[str]]) -> None:
+    """
+    Save used domains to cache file with current timestamp.
+    
+    Args:
+        output_dir (str): Output directory where cache file will be saved
+        used_domains (Dict[str, List[str]]): Dictionary of used domains per category
+    """
+    cache_path = os.path.join(output_dir, DOMAIN_CACHE_FILE)
+    current_timestamp = datetime.now().isoformat()
+    
+    # Create cache data structure
+    cache_data = {}
+    for category, domains in used_domains.items():
+        cache_data[category] = {
+            'domains': domains,
+            'timestamp': current_timestamp
+        }
+    
+    try:
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+        
+        with open(cache_path, 'w') as f:
+            json.dump(cache_data, f, indent=2)
+        
+        total_domains = sum(len(domains) for domains in used_domains.values())
+        logger.info(f"💾 Saved domain cache: {total_domains} domains across {len(used_domains)} categories")
+        logger.info(f"📁 Cache file: {cache_path}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to save domain cache: {e}")
 
 
 def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str = 'ladytisiphone.com', dnst_ip: str = '', dns_server: str = 'legacy') -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, Dict]]:
@@ -242,7 +444,7 @@ def generate_additional_domains(mode: str, dga_count: int = 15, dnst_domain: str
     return additional_domains, domain_mapping, execution_config
 
 
-def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]], dns_server: str = 'legacy') -> Dict[str, Dict]:
+def execute_additional_domains(execution_config: Dict[str, Dict], categories: Dict[str, List[str]]) -> Dict[str, Dict]:
     """
     Execute additional domain queries (DGA and DNST) with precise timing for log correlation.
     
@@ -255,6 +457,9 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
         Dict[str, Dict]: Execution timing results for each additional category
     """
     execution_results = {}
+    # Detect best DNS server to use
+    dns_server = detect_best_dns_server()
+    logger.info(f"🌐 Using DNS server: {dns_server if dns_server != 'system' else 'system default'}")
     
     for category, config in execution_config.items():
         if not config.get('execution_needed', False):
@@ -271,19 +476,12 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 # Execute DNS queries for DGA domains
                 logger.info(f"🔍 Executing DNS queries for {len(domains)} DGA domains...")
                 for domain in domains:
-                    # Execute local dig query
-                    try:
-                        import subprocess
-                        # Build dig command based on dns_server parameter
-                        if dns_server and dns_server.lower() != 'legacy':
-                            dig_cmd = ['dig', f'@{dns_server}', '+short', domain]
-                        else:
-                            dig_cmd = ['dig', '+short', domain]
-                        
-                        result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=5)
-                        logger.debug(f"   DGA query: {domain} -> {result.returncode}")
-                    except Exception as e:
-                        logger.debug(f"   DGA query failed: {domain} -> {e}")
+                    # Execute DNS query with fallback and logging
+                    result = execute_dig_with_fallback(domain, dns_server)
+                    if result['status'] == 'success':
+                        logger.debug(f"   DGA query: {domain} -> success")
+                    else:
+                        logger.debug(f"   DGA query: {domain} -> failed: {result['error']}")
                 
                 end_time = datetime.utcnow()
                 logger.info(f"✅ Completed DGA queries in {(end_time - start_time).total_seconds():.1f} seconds")
@@ -294,7 +492,7 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 anycast_ip = config['anycast_ip']
                 
                 logger.info(f"🔗 Executing DNST tunneling simulation for: {base_domain}")
-                dnst_result = generate_dnst_data_exfiltration(domain=base_domain, anycast_ip=anycast_ip, dns_server=dns_server)
+                dnst_result = generate_dnst_data_exfiltration(domain=base_domain, anycast_ip=anycast_ip, dns_server=dns_server if dns_server != 'system' else '169.254.169.254')
                 
                 # Update the category with the actual DNST domain
                 categories[category] = [dnst_result]
@@ -326,13 +524,16 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
     return execution_results
 
 
-def load_category_indicators(file_path: str) -> Dict[str, List[str]]:
+def load_category_indicators(file_path: str, output_dir: str = CATEGORY_OUTPUT_DIR, ttl_seconds: int = 0) -> Dict[str, List[str]]:
     """
     Load domain indicators organized by category from JSON file.
     Randomly samples up to MAX_DOMAINS_PER_CATEGORY domains from each category.
+    Filters out recently used domains based on TTL cache.
     
     Args:
         file_path (str): Path to the category indicators JSON file
+        output_dir (str): Output directory for cache file (default: CATEGORY_OUTPUT_DIR)
+        ttl_seconds (int): TTL in seconds for domain caching (0 = no caching)
         
     Returns:
         dict: Dictionary with categories as keys and sampled domain lists as values
@@ -345,34 +546,60 @@ def load_category_indicators(file_path: str) -> Dict[str, List[str]]:
         with open(file_path, 'r') as f:
             categories = json.load(f)
         
-        # Filter out empty categories, sample domains, and log statistics
+        # Load cached domains if TTL is enabled
+        cached_domains = {}
+        if ttl_seconds > 0:
+            cached_domains = load_domain_cache(output_dir, ttl_seconds)
+        
+        # Filter out empty categories, apply cache filtering, sample domains, and log statistics
         filtered_categories = {}
         total_domains = 0
         total_original_domains = 0
+        total_cached_filtered = 0
         
         for category, domains in categories.items():
             if domains:  # Only include categories with domains
                 total_original_domains += len(domains)
                 
-                # Sample up to MAX_DOMAINS_PER_CATEGORY domains randomly
-                if len(domains) > MAX_DOMAINS_PER_CATEGORY:
-                    sampled_domains = random.sample(domains, MAX_DOMAINS_PER_CATEGORY)
-                    logger.info(f"🎯 Category '{category}': Sampled {MAX_DOMAINS_PER_CATEGORY} from {len(domains)} domains")
-                else:
-                    sampled_domains = domains
-                    logger.info(f"✅ Category '{category}': Using all {len(domains)} domains")
+                # Filter out cached domains for this category
+                available_domains = domains
+                if ttl_seconds > 0 and category in cached_domains:
+                    cached_set = set(cached_domains[category])
+                    available_domains = [d for d in domains if d not in cached_set]
+                    filtered_count = len(domains) - len(available_domains)
+                    total_cached_filtered += filtered_count
+                    if filtered_count > 0:
+                        logger.info(f"🚫 Category '{category}': Filtered out {filtered_count} cached domains, {len(available_domains)} available")
                 
-                filtered_categories[category] = sampled_domains
-                total_domains += len(sampled_domains)
+                # Sample up to MAX_DOMAINS_PER_CATEGORY domains randomly from available domains
+                if len(available_domains) > MAX_DOMAINS_PER_CATEGORY:
+                    sampled_domains = random.sample(available_domains, MAX_DOMAINS_PER_CATEGORY)
+                    logger.info(f"🎯 Category '{category}': Sampled {MAX_DOMAINS_PER_CATEGORY} from {len(available_domains)} available domains")
+                elif len(available_domains) > 0:
+                    sampled_domains = available_domains
+                    logger.info(f"✅ Category '{category}': Using all {len(available_domains)} available domains")
+                else:
+                    # No available domains after cache filtering
+                    logger.warning(f"⚠️ Category '{category}': No available domains after cache filtering (all {len(domains)} domains recently used)")
+                    sampled_domains = []
+                
+                if sampled_domains:
+                    filtered_categories[category] = sampled_domains
+                    total_domains += len(sampled_domains)
             else:
                 logger.info(f"ℹ️ Category '{category}': Empty, skipping")
         
-        logger.info(f"📊 Domain Sampling Summary:")
+        # Log comprehensive statistics
+        logger.info("📊 Domain Sampling Summary:")
         logger.info(f"   Original total domains: {total_original_domains}")
-        logger.info(f"   Sampled total domains: {total_domains}")
+        if ttl_seconds > 0:
+            logger.info(f"   Cache filtered domains: {total_cached_filtered}")
+            logger.info(f"   Available after cache: {total_original_domains - total_cached_filtered}")
+        logger.info(f"   Final sampled domains: {total_domains}")
         logger.info(f"   Max per category: {MAX_DOMAINS_PER_CATEGORY}")
         logger.info(f"   Categories processed: {len(filtered_categories)}")
-        logger.info(f"   Reduction: {((total_original_domains - total_domains) / total_original_domains * 100):.1f}%")
+        reduction_pct = ((total_original_domains - total_domains) / total_original_domains * 100) if total_original_domains > 0 else 0
+        logger.info(f"   Total reduction: {reduction_pct:.1f}%")
         
         return filtered_categories
         
@@ -415,7 +642,7 @@ def create_empty_log_result(category: str, domains: List[str]) -> Dict:
     }
 
 
-def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str], dns_server: str = 'legacy') -> Dict:
+def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, domains: List[str]) -> Dict:
     """
     Execute DNS queries for a specific domain category on a single VM using batching.
     Processes domains in batches of CATEGORY_BATCH_SIZE for optimal performance.
@@ -425,12 +652,15 @@ def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, dom
         vm_config (dict): VM configuration
         category (str): Domain category name
         domains (list): List of domains to query for this category
-        dns_server (str): DNS server IP to use for queries
         
     Returns:
         dict: Query execution results with timing information
     """
     try:
+        # Detect best DNS server for this category
+        dns_server = detect_best_dns_server()
+        logger.info(f"🌐 Using DNS server for {category}: {dns_server if dns_server != 'system' else 'system default'}")
+        
         start_time = datetime.utcnow()
         logger.info(f"🚀 Starting DNS queries for category '{category}' on {vm_id}")
         logger.info(f"📋 VM: {vm_config['name']} in {vm_config['zone']}")
@@ -442,22 +672,9 @@ def execute_queries_for_category(vm_id: str, vm_config: Dict, category: str, dom
         # Execute dig queries locally for all domains
         all_dig_results = {}
         for domain in domains:
-            try:
-                # Build dig command based on dns_server parameter
-                if dns_server and dns_server.lower() != 'legacy':
-                    dig_cmd = ["dig", f"@{dns_server}", domain, "+short"]
-                else:
-                    dig_cmd = ["dig", domain, "+short"]
-                
-                result = subprocess.run(dig_cmd, capture_output=True, text=True, timeout=10)
-                status = "success" if result.returncode == 0 else "error"
-                all_dig_results[domain] = {
-                    "status": status,
-                    "output": result.stdout.strip(),
-                    "error": result.stderr.strip() if result.returncode != 0 else ""
-                }
-            except Exception as e:
-                all_dig_results[domain] = {"status": "error", "output": "", "error": str(e)}
+            # Use the new execute_dig_with_fallback function
+            result = execute_dig_with_fallback(domain, dns_server)
+            all_dig_results[domain] = result
 
         end_time = datetime.utcnow()
         execution_time = (end_time - start_time).total_seconds()
@@ -751,12 +968,12 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
                     # This accounts for the fact that DNST generates many DNS queries (segments)
                     # but only one threat event that represents detection of the entire session
                     detection_rate = 100.0 if distinct_domain_threat_count > 0 else 0.0
-                    logger.info(f"🔗 DNST Detection Logic: {client_dns_query_domain} domain(s) tested, "
+                    logger.info(f"🔗 DNST Detection Logic for {category}: {client_dns_query_domain} domain(s) tested, "
                               f"{distinct_domain_threat_count} threat event(s) detected → {detection_rate}% detection rate")
                 else:
                     # Standard calculation: threats detected / domains we actually queried
                     detection_rate = round((distinct_domain_threat_count / client_dns_query_domain) * 100, 2)
-                    logger.info(f"📊 Detection Rate Calculation: {distinct_domain_threat_count} threats detected "
+                    logger.info(f"📊 Detection Rate Calculation for {category}: {distinct_domain_threat_count} threats detected "
                               f"from {client_dns_query_domain} domains queried → {detection_rate}%")
             else:
                 detection_rate = 0.0
@@ -1129,10 +1346,12 @@ def main():
         logger.info(f"📍 Region: {vm_config.get('region', 'N/A')}")
         flush_logs()
         
-        # Load category indicators
+        # Load category indicators with TTL cache support
         logger.info("📥 Loading category indicators...")
+        if args.ttl > 0:
+            logger.info(f"⏰ TTL-based domain caching enabled: {args.ttl} seconds ({args.ttl/60:.1f} minutes)")
         category_file = os.path.join(os.path.dirname(__file__), CATEGORY_INDICATORS_FILE)
-        all_categories = load_category_indicators(category_file)
+        all_categories = load_category_indicators(category_file, CATEGORY_OUTPUT_DIR, args.ttl)
         
         if not all_categories:
             raise Exception("No domain categories loaded from indicators file")
@@ -1160,8 +1379,7 @@ def main():
             mode=args.mode,
             dga_count=args.dga_count,
             dnst_domain=args.dnst_domain,
-            dnst_ip=args.dnst_ip,
-            dns_server=args.dns_server
+            dnst_ip=args.dnst_ip
         )
         
         # Merge additional domains with existing categories
@@ -1193,7 +1411,7 @@ def main():
         # First execute additional domains (DGA/DNST) with precise timing
         if execution_config:
             logger.info(f"\n🎯 Executing additional domain queries with precise timing...")
-            additional_execution_results = execute_additional_domains(execution_config, categories, args.dns_server)
+            additional_execution_results = execute_additional_domains(execution_config, categories)
             flush_logs()
         
         # Then execute regular category domains
@@ -1223,7 +1441,7 @@ def main():
                     query_results.append(result)
                     logger.info(f"✅ Used precise timing for {category}: {exec_result['execution_time']:.1f}s")
                     continue
-                result = execute_queries_for_category(vm_id, vm_config, category, domains, args.dns_server)
+                result = execute_queries_for_category(vm_id, vm_config, category, domains)
                 query_results.append(result)
             except Exception as e:
                 logger.error(f"❌ Category {category} query execution failed: {e}")
@@ -1326,6 +1544,46 @@ def main():
         output_dir = os.path.join(os.path.dirname(__file__), CATEGORY_OUTPUT_DIR)
         generate_category_csv(query_results, log_results, output_dir, args.output_format)
         generate_category_json_files(query_results, log_results, output_dir)
+        
+        # STEP 5: Save domain cache for TTL-based filtering
+        if args.ttl > 0:
+            logger.info(f"\n💾 STEP 5: Saving domain cache with TTL {args.ttl} seconds")
+            logger.info("="*60)
+            logger.info("ℹ️  DNST domains excluded from cache (dynamically generated per run)")
+            
+            # Collect all used domains from query results (exclude DNST domains)
+            used_domains = {}
+            for result in query_results:
+                category = result['category']
+                
+                # Skip DNST domains as they are dynamically generated and unique per run
+                if category == 'DNST_Tunneling':
+                    continue
+                    
+                if category not in used_domains:
+                    used_domains[category] = []
+                
+                # Add domain from this query result
+                domain = result.get('domain', '')
+                if domain and domain not in used_domains[category]:
+                    used_domains[category].append(domain)
+            
+            # Also include additional domains if they were processed (exclude DNST)
+            if additional_domains:
+                for category, domains in additional_domains.items():
+                    # Skip DNST domains as they are dynamically generated and unique per run
+                    if category == 'DNST_Tunneling':
+                        continue
+                        
+                    if category not in used_domains:
+                        used_domains[category] = []
+                    for domain in domains:
+                        if domain not in used_domains[category]:
+                            used_domains[category].append(domain)
+            
+            # Save the cache
+            save_domain_cache(output_dir, used_domains)
+            flush_logs()
         
         logger.info("🎉 Category analysis execution completed successfully!")
         logger.info("="*80)
