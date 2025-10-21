@@ -253,7 +253,8 @@ def execute_dig_with_fallback(domain: str, dns_server: str) -> dict:
                 "status": "success",
                 "output": result.stdout.strip(),
                 "error": "",
-                "dns_server": dns_server
+                "dns_server": dns_server,
+                "command": ' '.join(dig_cmd)
             }
         else:
             # Log the failure
@@ -270,17 +271,19 @@ def execute_dig_with_fallback(domain: str, dns_server: str) -> dict:
                 "status": "error",
                 "output": "",
                 "error": error_msg,
-                "dns_server": dns_server
+                "dns_server": dns_server,
+                "command": ' '.join(dig_cmd)
             }
             
     except subprocess.TimeoutExpired:
-        error_msg = f"DNS query timeout after 10 seconds"
+        error_msg = "DNS query timeout after 10 seconds"
         logger.warning(f"⏰ {error_msg} for {domain} using {server_desc}")
         return {
             "status": "error",
             "output": "",
             "error": error_msg,
-            "dns_server": dns_server
+            "dns_server": dns_server,
+            "command": ' '.join(dig_cmd)
         }
     except Exception as e:
         error_msg = str(e)
@@ -289,7 +292,8 @@ def execute_dig_with_fallback(domain: str, dns_server: str) -> dict:
             "status": "error",
             "output": "",
             "error": error_msg,
-            "dns_server": dns_server
+            "dns_server": dns_server,
+            "command": ' '.join(dig_cmd)
         }
 
 
@@ -475,9 +479,11 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 
                 # Execute DNS queries for DGA domains
                 logger.info(f"🔍 Executing DNS queries for {len(domains)} DGA domains...")
+                dig_results = {}
                 for domain in domains:
                     # Execute DNS query with fallback and logging
                     result = execute_dig_with_fallback(domain, dns_server)
+                    dig_results[domain] = result
                     if result['status'] == 'success':
                         logger.debug(f"   DGA query: {domain} -> success")
                     else:
@@ -506,6 +512,7 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 'end_time': end_time,
                 'execution_time': (end_time - start_time).total_seconds(),
                 'domains': categories.get(category, []),
+                'dig_results': dig_results if config['type'] == 'dga' else {},
                 'success': True
             }
             
@@ -517,6 +524,7 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 'end_time': end_time,
                 'execution_time': (end_time - start_time).total_seconds(),
                 'domains': categories.get(category, []),
+                'dig_results': {},
                 'success': False,
                 'error': str(e)
             }
@@ -952,29 +960,37 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
             client_dns_query_domain = query_result.get('total_queries', 0)  # Total domains queried (not deduplicated)
             total_threat_count = len(log_result.get('threat_logs', []))  # Total threat logs found (not deduplicated)
             unique_domains_for_category = log_result.get('unique_threat_domains', [])
-            distinct_domain_threat_count = len(unique_domains_for_category)  # Only this one is deduplicated (distinct domains)
+            
+            # Get dig results to calculate corrected detection rate
+            dig_results = query_result.get('dig_results', {})
+            successful_dig_domains = set()
+            for domain in query_result.get('domains', []):
+                dig_result = dig_results.get(domain, {})
+                if dig_result.get('status') == 'success':
+                    successful_dig_domains.add(domain)
+            
+            # Calculate domains that had successful DNS queries AND were detected as threats
+            dig_success_threat_domains = successful_dig_domains.intersection(set(unique_domains_for_category))
+            dig_success_threat_count = len(dig_success_threat_domains)
             
             # Add to global unique domains sets
             all_unique_domains.update(unique_domains_for_category)
             
-            # Calculate detection rate: (Distinct domain Threat Count / Client DNS Query Domains) * 100
-            # This is more logical than using DNS logs since:
-            # 1. DNS logs can miss queries due to timing/network issues
-            # 2. We want to know: "Of the domains we tested, what % were detected as threats?"
-            # 3. Maximum possible rate should be 100% (can't detect more than we queried)
+            # Calculate corrected detection rate: (Successful Dig Threats / Total Queried Domains) * 100
+            # This accounts for DNS query failures properly
             if client_dns_query_domain > 0:
                 if category == 'DNST_Tunneling':
                     # For DNST: 100% if any threats detected, 0% if none
                     # This accounts for the fact that DNST generates many DNS queries (segments)
                     # but only one threat event that represents detection of the entire session
-                    detection_rate = 100.0 if distinct_domain_threat_count > 0 else 0.0
+                    detection_rate = 100.0 if dig_success_threat_count > 0 else 0.0
                     logger.info(f"🔗 DNST Detection Logic for {category}: {client_dns_query_domain} domain(s) tested, "
-                              f"{distinct_domain_threat_count} threat event(s) detected → {detection_rate}% detection rate")
+                              f"{dig_success_threat_count} threat event(s) detected → {detection_rate}% detection rate")
                 else:
-                    # Standard calculation: threats detected / domains we actually queried
-                    detection_rate = round((distinct_domain_threat_count / client_dns_query_domain) * 100, 2)
-                    logger.info(f"📊 Detection Rate Calculation for {category}: {distinct_domain_threat_count} threats detected "
-                              f"from {client_dns_query_domain} domains queried → {detection_rate}%")
+                    # Corrected calculation: successful dig threats / total domains attempted
+                    detection_rate = round((dig_success_threat_count / client_dns_query_domain) * 100, 2)
+                    logger.info(f"📊 Detection Rate Calculation for {category}: {dig_success_threat_count} successful dig threats "
+                              f"from {client_dns_query_domain} domains attempted → {detection_rate}%")
             else:
                 detection_rate = 0.0
             
@@ -993,7 +1009,7 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
                     'DNS Query in DNS logs': dns_query_in_dns_logs,
                     'Distinct domains in DNS logs': distinct_domains_in_dns_logs,
                     'Total Threat Count': total_threat_count,
-                    'Distinct domain Threat Count': distinct_domain_threat_count,
+                    'Distinct domain Threat Count': dig_success_threat_count,  # Use corrected count
                     'Detection Rate (%)': detection_rate
                 }
             else:
@@ -1002,7 +1018,7 @@ def generate_category_csv(query_results: List[Dict], log_results: List[Dict], ou
                     'Domain Category': category,
                     'Client DNS Query Domain': client_dns_query_domain,
                     'Total Threat Count': total_threat_count,
-                    'Distinct domain Threat Count': distinct_domain_threat_count,
+                    'Distinct domain Threat Count': dig_success_threat_count,  # Use corrected count
                     'Detection Rate (%)': detection_rate
                 }
             
@@ -1248,7 +1264,30 @@ def generate_category_json_files(query_results: List[Dict], log_results: List[Di
             # Generate non-detected domains JSON for this category
             queried_domains = set(query_result.get('domains', []))
             threat_domains = set(log_result.get('unique_threat_domains', []))
-            non_detected_domains = list(queried_domains - threat_domains)
+            
+            # Get dig results to analyze DNS query success/failure
+            dig_results = query_result.get('dig_results', {})
+            
+            # Categorize domains based on dig results
+            successful_dig_domains = set()
+            failed_dig_domains = {}  # domain -> error info
+            
+            for domain in queried_domains:
+                dig_result = dig_results.get(domain, {})
+                if dig_result.get('status') == 'success':
+                    successful_dig_domains.add(domain)
+                else:
+                    # This domain had a dig failure
+                    failed_dig_domains[domain] = {
+                        'error': dig_result.get('error', 'Unknown dig error'),
+                        'dns_server': dig_result.get('dns_server', 'Unknown')
+                    }
+            
+            # Calculate domains that had successful DNS queries AND were detected as threats
+            dig_success_threat_domains = successful_dig_domains.intersection(threat_domains)
+            
+            # Domains that were successfully queried but NOT detected as threats
+            non_detected_domains = list(successful_dig_domains - threat_domains)
             
             if queried_domains:  # Always create file if domains were queried
                 non_detected_filename = f"non_detected_domains_{safe_category}.json"
@@ -1266,12 +1305,23 @@ def generate_category_json_files(query_results: List[Dict], log_results: List[Di
                     },
                     "analysis_summary": {
                         "total_queried_domains": len(queried_domains),
-                        "total_threat_detected_domains": len(threat_domains),
+                        "successful_dig_queries": len(successful_dig_domains),
+                        "failed_dig_queries": len(failed_dig_domains),
+                        "total_threat_detected_domains": len(dig_success_threat_domains),
                         "total_non_detected_domains": len(non_detected_domains),
-                        "detection_rate_percent": round((len(threat_domains) / len(queried_domains) * 100), 2) if queried_domains else 0.0
+                        "detection_rate_percent": round((len(dig_success_threat_domains) / len(queried_domains) * 100), 2) if queried_domains else 0.0
                     },
-                    "queried_domains": sorted(list(queried_domains)),
-                    "threat_detected_domains": sorted(list(threat_domains)),
+                    "queried_domains": sorted(queried_domains),
+                    "successful_dig_domains": sorted(successful_dig_domains),
+                    "failed_dig_domains": [
+                        {
+                            "domain": domain,
+                            "error": error_info['error'],
+                            "command": error_info.get('command', 'Unknown command')
+                        }
+                        for domain, error_info in failed_dig_domains.items()
+                    ],
+                    "threat_detected_domains": sorted(dig_success_threat_domains),
                     "non_detected_domains": sorted(non_detected_domains)
                 }
                 
@@ -1279,7 +1329,13 @@ def generate_category_json_files(query_results: List[Dict], log_results: List[Di
                     json.dump(non_detected_data, f, indent=2, default=str)
                 
                 total_non_detected_files += 1
-                logger.info(f"📊 Generated non-detected domains file: {non_detected_filename} ({len(non_detected_domains)} non-detected domains)")
+                logger.info(f"📊 Generated non-detected domains file: {non_detected_filename}")
+                logger.info(f"   • Total queried domains: {len(queried_domains)}")
+                logger.info(f"   • Successful dig queries: {len(successful_dig_domains)}")
+                logger.info(f"   • Failed dig queries: {len(failed_dig_domains)}")
+                logger.info(f"   • Threat detected domains: {len(dig_success_threat_domains)}")
+                logger.info(f"   • Non-detected domains: {len(non_detected_domains)}")
+                logger.info(f"   • Detection rate: {round((len(dig_success_threat_domains) / len(queried_domains) * 100), 2) if queried_domains else 0.0}%")
         
         logger.info("="*80)
         logger.info("📁 PER-CATEGORY JSON FILES SUMMARY")
@@ -1423,18 +1479,20 @@ def main():
                 if category in additional_execution_results and additional_execution_results[category].get('success', False):
                     # Use the precise timing from additional execution
                     exec_result = additional_execution_results[category]
+                    dig_results = exec_result.get('dig_results', {})
+                    successful_queries = sum(1 for result in dig_results.values() if result.get('status') == 'success')
                     result = {
                         'vm_id': vm_id,
                         'vm_config': vm_config,
                         'category': category,
                         'domains': exec_result['domains'],
                         'total_queries': len(exec_result['domains']),
-                        'successful_queries': len(exec_result['domains']),  # Assume all successful for additional domains
-                        'failed_queries': 0,
+                        'successful_queries': successful_queries,
+                        'failed_queries': len(exec_result['domains']) - successful_queries,
                         'execution_time': exec_result['execution_time'],
                         'start_time': exec_result['start_time'],
                         'end_time': exec_result['end_time'],
-                        'dig_results': {},  # Not needed for additional domains
+                        'dig_results': dig_results,
                         'batches_processed': 1,
                         'additional_domain_category': True
                     }
