@@ -1280,7 +1280,7 @@ def generate_category_json_files(query_results: List[Dict], log_results: List[Di
                     # This domain had a dig failure
                     failed_dig_domains[domain] = {
                         'error': dig_result.get('error', 'Unknown dig error'),
-                        'dns_server': dig_result.get('dns_server', 'Unknown')
+                        'command': dig_result.get('command', 'Unknown command')
                     }
             
             # Calculate domains that had successful DNS queries AND were detected as threats
