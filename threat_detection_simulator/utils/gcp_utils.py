@@ -744,6 +744,7 @@ timestamp<="{end_timestamp}"'''
 def extract_unique_domains_from_threats(threat_logs: List[Dict]) -> List[str]:
     """
     Extract unique domain names from threat detection logs.
+    For DNST tunneling, uses threatIndicator field; for others uses query_name.
     
     Args:
         threat_logs (list): List of threat detection log entries
@@ -755,10 +756,23 @@ def extract_unique_domains_from_threats(threat_logs: List[Dict]) -> List[str]:
     
     for log_entry in threat_logs:
         try:
-            query_name = log_entry.get('query_name', '')
-            if query_name:
+            # For DNST tunneling, use threatIndicator instead of query_name
+            # because query_name contains the full tunneling domain while
+            # threatIndicator contains the base domain we actually queried
+            threat_id = log_entry.get('threat_id', '')
+            raw_entry = log_entry.get('raw_entry', {})
+            
+            if 'DNST' in threat_id and raw_entry:
+                # Extract threatIndicator from nested structure for DNST
+                threat_info = raw_entry.get('jsonPayload', {}).get('threatInfo', {})
+                domain = threat_info.get('threatIndicator', '')
+            else:
+                # For non-DNST threats, use query_name as before
+                domain = log_entry.get('query_name', '')
+            
+            if domain:
                 # Remove trailing dot and convert to lowercase for consistency
-                domain = query_name.rstrip('.').lower()
+                domain = domain.rstrip('.').lower()
                 # Skip empty domains and internal/system domains
                 if domain and not any(excluded in domain for excluded in ['internal', 'local', 'googleapis']):
                     unique_domains.add(domain)
