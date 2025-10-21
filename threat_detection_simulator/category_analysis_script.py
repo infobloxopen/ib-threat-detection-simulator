@@ -500,6 +500,15 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 logger.info(f"🔗 Executing DNST tunneling simulation for: {base_domain}")
                 dnst_result = generate_dnst_data_exfiltration(domain=base_domain, anycast_ip=anycast_ip, dns_server=dns_server if dns_server != 'system' else '169.254.169.254')
                 
+                # Also capture dig results for the DNST base domain for correlation
+                dig_results = {}
+                result = execute_dig_with_fallback(dnst_result, dns_server)
+                dig_results[dnst_result] = result
+                if result['status'] == 'success':
+                    logger.debug(f"   DNST base domain query: {dnst_result} -> success")
+                else:
+                    logger.debug(f"   DNST base domain query: {dnst_result} -> failed: {result['error']}")
+                
                 # Update the category with the actual DNST domain
                 categories[category] = [dnst_result]
                 
@@ -512,7 +521,7 @@ def execute_additional_domains(execution_config: Dict[str, Dict], categories: Di
                 'end_time': end_time,
                 'execution_time': (end_time - start_time).total_seconds(),
                 'domains': categories.get(category, []),
-                'dig_results': dig_results if config['type'] == 'dga' else {},
+                'dig_results': dig_results,  # Use dig_results for both DGA and DNST
                 'success': True
             }
             
@@ -1286,8 +1295,23 @@ def generate_category_json_files(query_results: List[Dict], log_results: List[Di
             # Calculate domains that had successful DNS queries AND were detected as threats
             dig_success_threat_domains = successful_dig_domains.intersection(threat_domains)
             
-            # Domains that were successfully queried but NOT detected as threats
-            non_detected_domains = list(successful_dig_domains - threat_domains)
+            # For DNST tunneling, detection should be based on any queried domain that appears in threats
+            # (regardless of dig success/failure) since DNST is designed to fail DNS queries
+            if 'DNST' in category.upper() or 'TUNNELING' in category.upper():
+                # DNST detection: any queried domain that appears in threat domains
+                actual_threat_detected_domains = queried_domains.intersection(threat_domains)
+                actual_threat_detected_count = len(actual_threat_detected_domains)
+                # For DNST, non-detected are queried domains that are NOT in threat domains
+                non_detected_domains = list(queried_domains - threat_domains)
+            else:
+                # Standard detection: only successful dig queries that are also in threat domains
+                actual_threat_detected_domains = dig_success_threat_domains
+                actual_threat_detected_count = len(dig_success_threat_domains)
+                # For standard categories, non-detected are successful digs that are NOT in threat domains
+                non_detected_domains = list(successful_dig_domains - threat_domains)
+            
+            # Domains that were successfully queried but NOT detected as threats (kept for backward compatibility)
+            # This is now only used for the old-style non_detected_domains field
             
             if queried_domains:  # Always create file if domains were queried
                 non_detected_filename = f"non_detected_domains_{safe_category}.json"
@@ -1307,9 +1331,9 @@ def generate_category_json_files(query_results: List[Dict], log_results: List[Di
                         "total_queried_domains": len(queried_domains),
                         "successful_dig_queries": len(successful_dig_domains),
                         "failed_dig_queries": len(failed_dig_domains),
-                        "total_threat_detected_domains": len(dig_success_threat_domains),
+                        "total_threat_detected_domains": len(actual_threat_detected_domains),
                         "total_non_detected_domains": len(non_detected_domains),
-                        "detection_rate_percent": round((len(dig_success_threat_domains) / len(queried_domains) * 100), 2) if queried_domains else 0.0
+                        "detection_rate_percent": round((len(actual_threat_detected_domains) / len(queried_domains) * 100), 2) if queried_domains else 0.0
                     },
                     "queried_domains": sorted(queried_domains),
                     "successful_dig_domains": sorted(successful_dig_domains),
@@ -1321,7 +1345,7 @@ def generate_category_json_files(query_results: List[Dict], log_results: List[Di
                         }
                         for domain, error_info in failed_dig_domains.items()
                     ],
-                    "threat_detected_domains": sorted(dig_success_threat_domains),
+                    "threat_detected_domains": sorted(actual_threat_detected_domains),
                     "non_detected_domains": sorted(non_detected_domains)
                 }
                 
