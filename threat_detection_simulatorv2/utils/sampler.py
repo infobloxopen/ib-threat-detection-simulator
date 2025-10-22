@@ -35,11 +35,6 @@ SUPPORTED_CATEGORIES = [
     "DNST_Tunneling"
 ]
 
-# Maximum number of domains to sample per category (standard for consistency)
-# This ensures all categories try to sample the same number of domains
-# for fair comparison and consistent detection rate calculations
-MAX_SAMPLE = 50
-
 @dataclass
 class DomainSample:
     """Represents a sampled domain with metadata"""
@@ -427,7 +422,7 @@ def sample_domains_for_category(category: str, count: int,
     return sample.domains
 
 def create_category_objects(sampler: ThreatDomainSampler, 
-                          count_per_category: int = MAX_SAMPLE,
+                          count_per_category: int = 50,
                           random_seed: Optional[int] = None) -> Dict[str, CategorySample]:
     """
     Create category objects with sampled domains for all supported categories
@@ -546,7 +541,7 @@ def get_expected_threat_domains_from_dga(dga_domains: List[str]) -> List[str]:
     return expected_domains
 
 
-def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_ip: str = "", dns_server: str = "169.154.169.254") -> str:
+def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_ip: str = "", dns_server: str = "169.254.169.254") -> str:
     """
     Generate DNS tunneling (DNST) test data for threat detection.
     
@@ -557,7 +552,7 @@ def generate_dnst_data_exfiltration(domain: str = "ladytisiphone.com", anycast_i
     Args:
         domain (str): Domain to use for DNS tunneling (default: ladytisiphone.com)
         anycast_ip (str): Anycast IP to use for DNS queries (empty for default)
-        dns_server (str): DNS server to use for queries (default: 169.154.169.254)
+        dns_server (str): DNS server to use for queries (default: 169.254.169.254)
         
     Returns:
         str: The generated DNST domain used for tunneling (base domain for threat correlation)
@@ -648,8 +643,8 @@ if __name__ == "__main__":
     # Create sampler
     sampler = ThreatDomainSampler()
     
-    # Sample MAX_SAMPLE domains per category (standard: 50)
-    results = sampler.sample_all_categories(MAX_SAMPLE)
+    # Sample 50 domains per category (standard default)
+    results = sampler.sample_all_categories(50)
     
     # Print summary
     summary = sampler.get_sampling_summary()

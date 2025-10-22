@@ -11,18 +11,19 @@
 #    - Needed for VM management and SSH access
 # 3. This script will automatically install: python3-venv, python3-pip
 #
-# USAGE:
-#   ./run.sh <log_level> <mode> [--ttl <seconds>]
+# USAGE (run from threat_detection_simulatorv2/ directory):
+#   ./run.sh <log_level> <mode> [--ttl <seconds>] [--sample-count <number>]
 #
 # PARAMETERS:
-#   log_level:    debug | info
-#   mode:         basic | advanced
-#   --ttl:        Optional TTL in seconds for domain caching (default: 600 = 10 minutes)
+#   log_level:      debug | info
+#   mode:           basic | advanced
+#   --ttl:          Optional TTL in seconds for domain caching (default: 600 = 10 minutes)
+#   --sample-count: Optional number of domains to sample per category (default: 50)
 #
 # EXAMPLES:
-#   ./run.sh debug basic                         # Debug level + basic mode
-#   ./run.sh info advanced --ttl 1800           # Info level + advanced mode + 30-minute cache TTL
-#   ./run.sh debug advanced --ttl 300            # All options combined
+#   ./run.sh debug basic                              # Debug level + basic mode
+#   ./run.sh info advanced --ttl 1800                # Info level + advanced mode + 30-minute cache TTL
+#   ./run.sh debug advanced --ttl 300 --sample-count 100  # All options combined
 
 # Color codes for output
 RED='\033[0;31m'
@@ -71,6 +72,7 @@ validate_arguments() {
     local log_level="$1"
     local mode="$2" 
     local ttl="$3"
+    local sample_count="$4"
     
     # Validate log level
     if [[ "$log_level" != "debug" && "$log_level" != "info" ]]; then
@@ -88,6 +90,14 @@ validate_arguments() {
     if [ -n "$ttl" ]; then
         if ! [[ "$ttl" =~ ^[0-9]+$ ]] || [ "$ttl" -le 0 ]; then
             print_error "TTL must be a positive integer"
+            exit 1
+        fi
+    fi
+    
+    # Validate sample count only if provided (not empty)
+    if [ -n "$sample_count" ]; then
+        if ! [[ "$sample_count" =~ ^[0-9]+$ ]] || [ "$sample_count" -le 0 ]; then
+            print_error "Sample count must be a positive integer"
             exit 1
         fi
     fi
@@ -211,44 +221,51 @@ preflight_checks() {
     fi
 
     # 8. Check v2 specific files and structure
-    if [ -d "threat_detection_simulatorv2" ]; then
-        print_status "v2 simulator directory found"
+    if [ -d "utils" ]; then
+        print_status "v2 utils directory found"
         
         # Check for key v2 modules
-        if [ -f "threat_detection_simulatorv2/utils/sampler.py" ]; then
+        if [ -f "utils/sampler.py" ]; then
             print_status "v2 sampler module found"
         else
             print_error "v2 sampler module missing"
             errors=$((errors+1))
         fi
         
-        if [ -f "threat_detection_simulatorv2/utils/digger.py" ]; then
+        if [ -f "utils/digger.py" ]; then
             print_status "v2 digger module found"
         else
             print_error "v2 digger module missing"
             errors=$((errors+1))
         fi
         
-        if [ -f "threat_detection_simulatorv2/utils/threat_fetcher.py" ]; then
+        if [ -f "utils/threat_fetcher.py" ]; then
             print_status "v2 threat_fetcher module found"
         else
             print_error "v2 threat_fetcher module missing"
             errors=$((errors+1))
         fi
         
-        if [ -f "threat_detection_simulatorv2/utils/dependency_checker.py" ]; then
+        if [ -f "utils/dependency_checker.py" ]; then
             print_status "v2 dependency_checker module found"
         else
             print_warning "v2 dependency_checker module missing (optional)"
         fi
         
+        if [ -f "utils/gcp_utils.py" ]; then
+            print_status "v2 gcp_utils module found"
+        else
+            print_error "v2 gcp_utils module missing"
+            errors=$((errors+1))
+        fi
+        
     else
-        print_error "v2 simulator directory not found"
+        print_error "v2 utils directory not found"
         errors=$((errors+1))
     fi
 
     # 9. Check indicators file
-    if [ -f "threat_detection_simulatorv2/ib-base-category.json" ]; then
+    if [ -f "ib-base-category.json" ]; then
         print_status "Threat indicators file found"
     else
         print_error "Threat indicators file missing (ib-base-category.json)"
@@ -375,8 +392,9 @@ main() {
     local log_level=$1
     local mode=$2
     local ttl=""
+    local sample_count=""
     
-    # Parse optional arguments (only --ttl now)
+    # Parse optional arguments (--ttl and --sample-count)
     local i=3
     while [ $i -le $# ]; do
         local arg="${!i}"
@@ -393,6 +411,15 @@ main() {
                     exit 1
                 fi
                 ;;
+            "--sample-count")
+                if [ -n "$next_arg" ] && [ $next_i -le $# ]; then
+                    sample_count="$next_arg"
+                    i=$((i + 2))
+                else
+                    print_error "--sample-count requires a value"
+                    exit 1
+                fi
+                ;;
             *)
                 print_error "Unknown argument: $arg"
                 exit 1
@@ -401,12 +428,13 @@ main() {
     done
     
     # Validate arguments
-    validate_arguments "$log_level" "$mode" "$ttl"
+    validate_arguments "$log_level" "$mode" "$ttl" "$sample_count"
 
-    # Check if we're in the right directory
-    if [ ! -d "threat_detection_simulatorv2" ]; then
-        print_error "threat_detection_simulatorv2 directory not found"
-        echo "Please run this script from the project root directory"
+    # Check if we're in the right directory (v2 structure)
+    if [ ! -d "utils" ] || [ ! -f "main.py" ]; then
+        print_error "v2 simulator structure not found"
+        echo "Please run this script from the threat_detection_simulatorv2 directory"
+        echo "Expected files: main.py, utils/ directory"
         exit 1
     fi
 
@@ -471,12 +499,17 @@ main() {
         cmd_args+=("--ttl" "$ttl")
     fi
     
+    # Add sample count argument if provided
+    if [ -n "$sample_count" ]; then
+        cmd_args+=("--sample-count" "$sample_count")
+    fi
+    
     # Check for main v2 script
     V2_MAIN_SCRIPT=""
-    if [ -f "threat_detection_simulatorv2/main.py" ]; then
-        V2_MAIN_SCRIPT="threat_detection_simulatorv2/main.py"
-    elif [ -f "threat_detection_simulatorv2/__main__.py" ]; then
-        V2_MAIN_SCRIPT="threat_detection_simulatorv2/__main__.py"
+    if [ -f "main.py" ]; then
+        V2_MAIN_SCRIPT="main.py"
+    elif [ -f "__main__.py" ]; then
+        V2_MAIN_SCRIPT="__main__.py"
     else
         print_error "v2 main script not found (main.py or __main__.py)"
         print_info "Creating a simple test runner..."

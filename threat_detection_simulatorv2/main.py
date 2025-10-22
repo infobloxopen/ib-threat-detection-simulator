@@ -109,8 +109,8 @@ Output Formats:
     parser.add_argument(
         '--sample-count',
         type=int,
-        default=5,
-        help='Number of domains to sample per category (default: 5)'
+        default=50,
+        help='Number of domains to sample per category (default: 50)'
     )
     
     parser.add_argument(
