@@ -8,6 +8,7 @@ calculating detection rates and providing detailed threat analysis.
 Key features:
 - Local threat log simulation (file-based) for testing
 - GCP Cloud Logging integration for real threat detection logs
+- Automatic VM metadata detection for GCP mode
 - Detection rate calculation based on successfully digged domains
 - Detailed threat event analysis and filtering
 - Extends CategoryDigResult with threat detection information
@@ -22,6 +23,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 from .digger import CategoryDigResult
+from .gcp_utils import auto_configure_threat_fetcher, GCPError
 
 logger = logging.getLogger(__name__)
 
@@ -112,33 +114,82 @@ class ThreatEventFetcher:
                  vm_instance_id: Optional[str] = None,
                  vm_zone: Optional[str] = None,
                  hours_back: float = 2.0,
-                 max_entries: int = 5000):
+                 max_entries: int = 5000,
+                 auto_detect: bool = True):
         """
         Initialize the threat event fetcher
         
         Args:
             mode: "simulation" for local file-based testing, "gcp" for real GCP logs
-            project_id: GCP project ID (required for GCP mode)
-            vm_instance_id: VM instance ID (required for GCP mode)
-            vm_zone: VM zone (required for GCP mode)
+            project_id: GCP project ID (auto-detected if None and auto_detect=True)
+            vm_instance_id: VM instance ID (auto-detected if None and auto_detect=True)
+            vm_zone: VM zone (auto-detected if None and auto_detect=True)
             hours_back: How many hours back to search for logs
             max_entries: Maximum number of log entries to retrieve
+            auto_detect: Automatically detect VM metadata for GCP mode
         """
         self.mode = mode
+        self.hours_back = hours_back
+        self.max_entries = max_entries
+        
+        # Initialize VM metadata parameters
         self.project_id = project_id
         self.vm_instance_id = vm_instance_id
         self.vm_zone = vm_zone
-        self.hours_back = hours_back
-        self.max_entries = max_entries
+        
+        # Handle GCP mode configuration
+        if mode == "gcp":
+            self._configure_gcp_mode(auto_detect, project_id, vm_instance_id, vm_zone)
         
         logger.info(f"🎯 ThreatEventFetcher initialized in {mode} mode")
         
         if mode == "gcp":
-            if not all([project_id, vm_instance_id, vm_zone]):
-                raise ValueError("GCP mode requires project_id, vm_instance_id, and vm_zone")
-            logger.info(f"🌐 GCP config: project={project_id}, vm={vm_instance_id}, zone={vm_zone}")
+            self._validate_gcp_parameters()
         else:
             logger.info("🧪 Using simulation mode with local threat event generation")
+    
+    def _configure_gcp_mode(self, auto_detect: bool, project_id: Optional[str], 
+                           vm_instance_id: Optional[str], vm_zone: Optional[str]) -> None:
+        """Configure GCP mode with automatic detection if needed"""
+        if auto_detect and not all([project_id, vm_instance_id, vm_zone]):
+            self._auto_detect_vm_metadata(project_id, vm_instance_id, vm_zone)
+    
+    def _auto_detect_vm_metadata(self, project_id: Optional[str], 
+                                vm_instance_id: Optional[str], vm_zone: Optional[str]) -> None:
+        """Auto-detect VM metadata for GCP mode"""
+        logger.info("🔍 Auto-detecting VM metadata for GCP mode...")
+        try:
+            auto_project_id, auto_vm_instance_id, auto_vm_zone = auto_configure_threat_fetcher()
+            
+            # Use auto-detected values if not provided
+            self.project_id = project_id or auto_project_id
+            self.vm_instance_id = vm_instance_id or auto_vm_instance_id
+            self.vm_zone = vm_zone or auto_vm_zone
+            
+            logger.info("✅ Auto-detected VM metadata:")
+            logger.info(f"   Project: {self.project_id}")
+            logger.info(f"   VM Instance: {self.vm_instance_id}")
+            logger.info(f"   Zone: {self.vm_zone}")
+            
+        except GCPError as e:
+            logger.warning(f"⚠️ Auto-detection failed: {e}")
+            logger.info("💡 Falling back to provided parameters or manual configuration")
+    
+    def _validate_gcp_parameters(self) -> None:
+        """Validate that all required GCP parameters are available"""
+        if not all([self.project_id, self.vm_instance_id, self.vm_zone]):
+            missing_params = []
+            if not self.project_id:
+                missing_params.append("project_id")
+            if not self.vm_instance_id:
+                missing_params.append("vm_instance_id")
+            if not self.vm_zone:
+                missing_params.append("vm_zone")
+                
+            raise ValueError(f"GCP mode requires: {', '.join(missing_params)}. "
+                           f"Auto-detection failed and manual parameters are incomplete.")
+        
+        logger.info(f"🌐 GCP config: project={self.project_id}, vm={self.vm_instance_id}, zone={self.vm_zone}")
     
     def _generate_simulated_threat_events(self, domains: List[str], category: str) -> List[ThreatEvent]:
         """
@@ -526,19 +577,21 @@ def fetch_threats_for_categories(dig_results: Dict[str, CategoryDigResult],
                                vm_zone: Optional[str] = None,
                                hours_back: float = 2.0,
                                start_time: Optional[datetime] = None,
-                               end_time: Optional[datetime] = None) -> Dict[str, CategoryThreatResult]:
+                               end_time: Optional[datetime] = None,
+                               auto_detect: bool = True) -> Dict[str, CategoryThreatResult]:
     """
     Convenience function to fetch threat events for category dig results
     
     Args:
         dig_results: Dictionary of CategoryDigResult objects
         mode: "simulation" or "gcp"
-        project_id: GCP project ID (required for GCP mode)
-        vm_instance_id: VM instance ID (required for GCP mode)
-        vm_zone: VM zone (required for GCP mode)
+        project_id: GCP project ID (auto-detected if None and auto_detect=True)
+        vm_instance_id: VM instance ID (auto-detected if None and auto_detect=True)
+        vm_zone: VM zone (auto-detected if None and auto_detect=True)
         hours_back: How many hours back to search
         start_time: Start time for threat log search
         end_time: End time for threat log search
+        auto_detect: Automatically detect VM metadata for GCP mode
         
     Returns:
         Dictionary of CategoryThreatResult objects
@@ -548,7 +601,8 @@ def fetch_threats_for_categories(dig_results: Dict[str, CategoryDigResult],
         project_id=project_id,
         vm_instance_id=vm_instance_id,
         vm_zone=vm_zone,
-        hours_back=hours_back
+        hours_back=hours_back,
+        auto_detect=auto_detect
     )
     
     return fetcher.fetch_threats_for_categories(dig_results, start_time, end_time)
