@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Enhanced Threat Detection Simulator Runner with VM Portability
+# Enhanced Threat Detection Simulator Runner with VM Portability & Auto-Installation
 # Supports: --dns-server legacy for custom DNS configurations
-# Features: Intelligent package management, timeout protection, automated setup
+# Features: Intelligent package management, timeout protection, automated setup, dependency auto-installation
 #
 # PREREQUISITES:
 # 1. VM must have "Allow full access to all Cloud APIs" enabled
@@ -10,7 +10,16 @@
 #    - Required for accessing Cloud Logging API
 # 2. User account must have Compute Admin access (or equivalent)
 #    - Needed for VM management and SSH access
-# 3. This script will automatically install: python3-venv, python3-pip
+# 3. This script will automatically install missing dependencies:
+#    - dig (dnsutils/bind-tools)
+#    - curl
+#    - gcloud CLI (Google Cloud SDK)
+#    - python3-requests, python3-urllib3
+#
+# AUTO-INSTALLATION SUPPORT:
+#   Supported OS: Ubuntu, Debian, RHEL, CentOS, Fedora, Rocky Linux, AlmaLinux, Alpine, openSUSE
+#   The script detects your OS and attempts to install missing dependencies automatically
+#   Use SKIP_PREFLIGHT=1 to skip all checks, or AUTO_INSTALL_CONTINUE=1 to continue despite errors
 #
 # USAGE:
 #   ./run.sh <log_level> <mode> [--dns-server <server>] [--ttl <seconds>]
@@ -22,10 +31,14 @@
 #   --ttl:        Optional TTL in seconds for domain caching (default: 600 = 10 minutes)
 #
 # EXAMPLES:
-#   ./run.sh debug basic                         # Debug level + basic mode
-#   ./run.sh info advanced --dns-server legacy  # Info level + advanced mode + legacy DNS
+#   ./run.sh debug basic                         # Debug level + basic mode (auto-installs missing deps)
+#   ./run.sh info advanced --dns-server legacy  # Info level + advanced mode + legacy DNS  
 #   ./run.sh info basic --ttl 1800              # Info level + basic mode + 30-minute cache TTL
 #   ./run.sh debug advanced --dns-server legacy --ttl 300  # All options combined
+#
+# ENVIRONMENT VARIABLES:
+#   SKIP_PREFLIGHT=1         # Skip all preflight checks and auto-installation
+#   AUTO_INSTALL_CONTINUE=1  # Continue execution even if auto-installation fails
 
 # Color codes for output
 RED='\033[0;31m'
@@ -99,6 +112,231 @@ cleanup() {
 # Set trap to run cleanup on script exit
 trap cleanup EXIT
 
+# Function to detect OS and package manager
+detect_os() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
+        OS_VERSION=$VERSION_ID
+    elif command -v lsb_release >/dev/null 2>&1; then
+        OS=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
+        OS_VERSION=$(lsb_release -sr)
+    elif [ -f /etc/redhat-release ]; then
+        OS="rhel"
+    elif [ -f /etc/debian_version ]; then
+        OS="debian"
+    else
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        # Handle macOS specifically
+        if [ "$OS" = "darwin" ]; then
+            OS="macos"
+        fi
+    fi
+    
+    echo "$OS"
+}
+
+# Function to install dig based on OS
+install_dig() {
+    local os=$(detect_os)
+    print_progress "Attempting to install dig (DNS utilities) for OS: $os"
+    
+    case "$os" in
+        ubuntu|debian)
+            print_info "Installing dnsutils package..."
+            if sudo apt-get update -qq && sudo apt-get install -y dnsutils; then
+                print_status "dig installed successfully via apt-get"
+                return 0
+            else
+                print_error "Failed to install dig via apt-get"
+                return 1
+            fi
+            ;;
+        rhel|centos|fedora|rocky|almalinux)
+            print_info "Installing bind-utils package..."
+            if command -v dnf >/dev/null 2>&1; then
+                if sudo dnf install -y bind-utils; then
+                    print_status "dig installed successfully via dnf"
+                    return 0
+                fi
+            elif command -v yum >/dev/null 2>&1; then
+                if sudo yum install -y bind-utils; then
+                    print_status "dig installed successfully via yum"
+                    return 0
+                fi
+            fi
+            print_error "Failed to install dig via package manager"
+            return 1
+            ;;
+        alpine)
+            print_info "Installing bind-tools package..."
+            if sudo apk add bind-tools; then
+                print_status "dig installed successfully via apk"
+                return 0
+            else
+                print_error "Failed to install dig via apk"
+                return 1
+            fi
+            ;;
+        suse|opensuse)
+            print_info "Installing bind-utils package..."
+            if sudo zypper install -y bind-utils; then
+                print_status "dig installed successfully via zypper"
+                return 0
+            else
+                print_error "Failed to install dig via zypper"
+                return 1
+            fi
+            ;;
+        macos)
+            print_info "macOS detected - dig should be available by default"
+            if command -v dig >/dev/null 2>&1; then
+                print_status "dig is already available on macOS"
+                return 0
+            else
+                print_warning "dig not found on macOS - try installing via Homebrew:"
+                print_info "  brew install bind"
+                return 1
+            fi
+            ;;
+        *)
+            print_warning "Unknown OS '$os' - cannot auto-install dig"
+            print_info "Please install DNS utilities manually:"
+            print_info "  Ubuntu/Debian: sudo apt-get install dnsutils"
+            print_info "  RHEL/CentOS:   sudo yum install bind-utils"
+            print_info "  Alpine:        sudo apk add bind-tools"
+            print_info "  macOS:         brew install bind"
+            return 1
+            ;;
+    esac
+}
+
+# Function to install curl based on OS
+install_curl() {
+    local os=$(detect_os)
+    print_progress "Attempting to install curl for OS: $os"
+    
+    case "$os" in
+        ubuntu|debian)
+            if sudo apt-get update -qq && sudo apt-get install -y curl; then
+                print_status "curl installed successfully via apt-get"
+                return 0
+            fi
+            ;;
+        rhel|centos|fedora|rocky|almalinux)
+            if command -v dnf >/dev/null 2>&1; then
+                if sudo dnf install -y curl; then
+                    print_status "curl installed successfully via dnf"
+                    return 0
+                fi
+            elif command -v yum >/dev/null 2>&1; then
+                if sudo yum install -y curl; then
+                    print_status "curl installed successfully via yum"
+                    return 0
+                fi
+            fi
+            ;;
+        alpine)
+            if sudo apk add curl; then
+                print_status "curl installed successfully via apk"
+                return 0
+            fi
+            ;;
+        suse|opensuse)
+            if sudo zypper install -y curl; then
+                print_status "curl installed successfully via zypper"
+                return 0
+            fi
+            ;;
+        macos)
+            print_info "macOS detected - curl should be available by default"
+            if command -v curl >/dev/null 2>&1; then
+                print_status "curl is already available on macOS"
+                return 0
+            else
+                print_warning "curl not found on macOS - try installing via Homebrew:"
+                print_info "  brew install curl"
+                return 1
+            fi
+            ;;
+    esac
+    
+    print_error "Failed to install curl"
+    return 1
+}
+
+# Function to install gcloud CLI
+install_gcloud() {
+    local os=$(detect_os)
+    print_progress "Attempting to install gcloud CLI for OS: $os"
+    
+    case "$os" in
+        ubuntu|debian)
+            print_info "Installing Google Cloud SDK via APT repository..."
+            if curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
+               echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
+               sudo apt-get update -qq && \
+               sudo apt-get install -y google-cloud-cli; then
+                print_status "gcloud CLI installed successfully"
+                return 0
+            else
+                print_error "Failed to install gcloud CLI via APT"
+                return 1
+            fi
+            ;;
+        rhel|centos|fedora|rocky|almalinux)
+            print_info "Installing Google Cloud SDK via YUM repository..."
+            if sudo tee -a /etc/yum.repos.d/google-cloud-sdk.repo << 'EOM'
+[google-cloud-cli]
+name=Google Cloud CLI
+baseurl=https://packages.cloud.google.com/yum/repos/cloud-sdk-el8-x86_64
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+EOM
+            then
+                if command -v dnf >/dev/null 2>&1; then
+                    if sudo dnf install -y google-cloud-cli; then
+                        print_status "gcloud CLI installed successfully via dnf"
+                        return 0
+                    fi
+                elif command -v yum >/dev/null 2>&1; then
+                    if sudo yum install -y google-cloud-cli; then
+                        print_status "gcloud CLI installed successfully via yum"
+                        return 0
+                    fi
+                fi
+            fi
+            print_error "Failed to install gcloud CLI via package manager"
+            return 1
+            ;;
+        macos)
+            print_info "macOS detected - checking for Homebrew or manual installation"
+            if command -v brew >/dev/null 2>&1; then
+                print_info "Installing gcloud CLI via Homebrew..."
+                if brew install google-cloud-sdk; then
+                    print_status "gcloud CLI installed successfully via Homebrew"
+                    return 0
+                else
+                    print_error "Failed to install gcloud CLI via Homebrew"
+                fi
+            else
+                print_warning "Homebrew not found. Please install gcloud CLI manually:"
+                print_info "  1. Download from: https://cloud.google.com/sdk/docs/install-sdk"
+                print_info "  2. Or install Homebrew first: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+                print_info "  3. Then run: brew install google-cloud-sdk"
+                return 1
+            fi
+            ;;
+        *)
+            print_warning "Auto-installation of gcloud CLI not supported for OS: $os"
+            print_info "Please install manually from: https://cloud.google.com/sdk/docs/install"
+            return 1
+            ;;
+    esac
+}
+
 preflight_checks() {
     local log_level=$1
     local mode=$2
@@ -110,7 +348,7 @@ preflight_checks() {
         return 0
     fi
 
-    echo -e "${CYAN}🔍 Running preflight checks...${NC}"
+    echo -e "${CYAN}🔍 Running preflight checks with auto-installation...${NC}"
     echo
     
     # Display configuration summary
@@ -126,7 +364,12 @@ preflight_checks() {
     fi
     echo
     
-    echo -e "${CYAN}🔧 Environment Checks:${NC}"
+    # Detect OS
+    local detected_os=$(detect_os)
+    print_info "Detected OS: $detected_os"
+    echo
+    
+    echo -e "${CYAN}🔧 Environment Checks & Auto-Installation:${NC}"
 
     local errors=0
 
@@ -142,26 +385,69 @@ preflight_checks() {
         fi
     else
         print_error "python3 not found in PATH"
+        print_warning "Python 3.8+ is required but auto-installation is complex"
+        print_info "Please install Python 3.8+ manually for your OS"
         errors=$((errors+1))
     fi
 
-    # 2. dig availability
+    # 2. dig availability with auto-installation
     if command -v dig >/dev/null 2>&1; then
         print_status "dig found: $(command -v dig)"
     else
-        print_error "dig command not found (install dnsutils / bind-tools)"
-        errors=$((errors+1))
+        print_warning "dig command not found - attempting auto-installation..."
+        if install_dig; then
+            # Verify installation
+            if command -v dig >/dev/null 2>&1; then
+                print_status "dig successfully installed: $(command -v dig)"
+            else
+                print_error "dig installation completed but command still not found"
+                errors=$((errors+1))
+            fi
+        else
+            print_error "Failed to auto-install dig"
+            errors=$((errors+1))
+        fi
     fi
 
-    # 3. gcloud CLI
+    # 3. curl availability with auto-installation (needed for metadata checks)
+    if command -v curl >/dev/null 2>&1; then
+        print_status "curl found: $(command -v curl)"
+    else
+        print_warning "curl command not found - attempting auto-installation..."
+        if install_curl; then
+            if command -v curl >/dev/null 2>&1; then
+                print_status "curl successfully installed: $(command -v curl)"
+            else
+                print_error "curl installation completed but command still not found"
+                errors=$((errors+1))
+            fi
+        else
+            print_warning "Failed to auto-install curl - metadata checks will be skipped"
+        fi
+    fi
+
+    # 4. gcloud CLI with auto-installation
     if command -v gcloud >/dev/null 2>&1; then
         print_status "gcloud found: $(command -v gcloud)"
     else
-        print_error "gcloud CLI not found (install Google Cloud SDK)"
-        errors=$((errors+1))
+        print_warning "gcloud CLI not found - attempting auto-installation..."
+        if install_gcloud; then
+            # Verify installation and refresh PATH
+            export PATH="/usr/bin:$PATH"
+            if command -v gcloud >/dev/null 2>&1; then
+                print_status "gcloud CLI successfully installed: $(command -v gcloud)"
+            else
+                print_error "gcloud CLI installation completed but command still not found"
+                print_info "You may need to restart your shell or source your profile"
+                errors=$((errors+1))
+            fi
+        else
+            print_error "Failed to auto-install gcloud CLI"
+            errors=$((errors+1))
+        fi
     fi
 
-    # 4. Metadata server accessibility (only if curl present)
+    # 5. Metadata server accessibility (only if curl present)
     if command -v curl >/dev/null 2>&1; then
         if curl -s -H "Metadata-Flavor: Google" --connect-timeout 2 http://metadata.google.internal/computeMetadata/v1/instance/id >/dev/null; then
             print_status "Metadata server reachable"
@@ -170,10 +456,10 @@ preflight_checks() {
             errors=$((errors+1))
         fi
     else
-        print_warning "curl not installed; skipping metadata reachability test"
+        print_warning "curl not available; skipping metadata reachability test"
     fi
 
-    # 5. Service account email & scopes
+    # 6. Service account email & scopes
     local sa_email=""
     if command -v curl >/dev/null 2>&1; then
         sa_email=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email || true)
@@ -185,7 +471,7 @@ preflight_checks() {
         fi
     fi
 
-    # 6. Logging API permission quick test (optional; tolerate failure but warn)
+    # 7. Logging API permission quick test (optional; tolerate failure but warn)
     if command -v gcloud >/dev/null 2>&1; then
         if gcloud logging read 'timestamp>="-5m"' --limit=1 --quiet >/dev/null 2>&1; then
             print_status "Cloud Logging read access OK"
@@ -194,7 +480,7 @@ preflight_checks() {
         fi
     fi
 
-    # 7. Verify network DNS path (attempt a metadata DNS query)
+    # 8. Verify network DNS path (attempt a metadata DNS query)
     if command -v dig >/dev/null 2>&1; then
         if dig @169.254.169.254 example.com +short >/dev/null 2>&1; then
             print_status "VPC DNS query successful"
@@ -204,9 +490,20 @@ preflight_checks() {
     fi
 
     # Summary
+    echo
     if [ $errors -gt 0 ]; then
-        print_error "Preflight failed with $errors error(s). Fix issues or set SKIP_PREFLIGHT=1 to override."
-        exit 2
+        print_error "Preflight completed with $errors error(s) after auto-installation attempts."
+        print_warning "You may need to:"
+        print_info "  1. Restart your shell to refresh PATH"
+        print_info "  2. Manually install missing dependencies"
+        print_info "  3. Set SKIP_PREFLIGHT=1 to override these checks"
+        
+        if [ "$AUTO_INSTALL_CONTINUE" = "1" ]; then
+            print_warning "AUTO_INSTALL_CONTINUE=1 set - continuing despite errors"
+        else
+            print_error "Stopping due to critical errors. Set AUTO_INSTALL_CONTINUE=1 to continue anyway."
+            exit 2
+        fi
     else
         print_status "All critical preflight checks passed"
     fi
@@ -229,12 +526,17 @@ main() {
         echo "  --ttl:        Optional TTL in seconds for domain caching (default: 300)"
         echo
         echo "Examples:"
-        echo "  $0 debug basic"
+        echo "  $0 debug basic                    # Auto-installs missing dependencies"
         echo "  $0 info advanced"
         echo "  $0 info basic --ttl 1800"
         echo "  $0 debug advanced --ttl 300"
         echo
+        echo "Environment Variables:"
+        echo "  SKIP_PREFLIGHT=1                 # Skip all dependency checks"
+        echo "  AUTO_INSTALL_CONTINUE=1          # Continue despite installation failures"
+        echo
         echo "Note: DNS server is automatically detected (system default → 169.254.169.254 fallback)"
+        echo "      Missing dependencies (dig, curl, gcloud) will be auto-installed for supported OS"
         echo
         exit 1
     fi
