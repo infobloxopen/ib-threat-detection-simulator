@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # Enhanced Threat Detection Simulator Runner with VM Portability
-# Supports: --dns-server legacy for custom DNS configurations
 # Features: Intelligent package management, timeout protection, automated setup
 #
 # PREREQUISITES:
@@ -13,19 +12,17 @@
 # 3. This script will automatically install: python3-venv, python3-pip
 #
 # USAGE:
-#   ./run.sh <log_level> <mode> [--dns-server <server>] [--ttl <seconds>]
+#   ./run.sh <log_level> <mode> [--ttl <seconds>]
 #
 # PARAMETERS:
 #   log_level:    debug | info
 #   mode:         basic | advanced
-#   --dns-server: Optional DNS server configuration (e.g., 'legacy')
 #   --ttl:        Optional TTL in seconds for domain caching (default: 600 = 10 minutes)
 #
 # EXAMPLES:
 #   ./run.sh debug basic                         # Debug level + basic mode
-#   ./run.sh info advanced --dns-server legacy  # Info level + advanced mode + legacy DNS
-#   ./run.sh info basic --ttl 1800              # Info level + basic mode + 30-minute cache TTL
-#   ./run.sh debug advanced --dns-server legacy --ttl 300  # All options combined
+#   ./run.sh info advanced --ttl 1800           # Info level + advanced mode + 30-minute cache TTL
+#   ./run.sh debug advanced --ttl 300            # All options combined
 
 # Color codes for output
 RED='\033[0;31m'
@@ -36,11 +33,9 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Configuration
 SCRIPT_TIMEOUT=600  # 10 minutes timeout for script execution
 PACKAGE_TIMEOUT=60  # 1 minute timeout for package operations
 
-# Function to print colored output
 print_status() {
     echo -e "${GREEN}✅${NC} $1"
 }

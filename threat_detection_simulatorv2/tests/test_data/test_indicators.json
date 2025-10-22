@@ -1,0 +1,50 @@
+{
+  "Phishing": [
+    "fake-paypal.com",
+    "phishing-bank.com", 
+    "evil-login.com",
+    "fake-amazon.com",
+    "scam-site.com"
+  ],
+  "Malicious_Domains": [
+    "malware-dropper.com",
+    "trojan-host.com",
+    "virus-distributor.com"
+  ],
+  "Command_&_Control": [
+    "c2-server1.com",
+    "botnet-control.com",
+    "command-center.com",
+    "control-panel.com"
+  ],
+  "TDS": [
+    "traffic-redirect.com",
+    "distribution-system.com"
+  ],
+  "Emerging_Domains": [
+    "newly-registered1.com",
+    "fresh-domain.com",
+    "recent-registration.com"
+  ],
+  "High_Risk": [
+    "high-threat.com",
+    "dangerous-site.com"
+  ],
+  "Lookalikes": [
+    "gooogle.com",
+    "amazoon.com",
+    "paypaI.com"
+  ],
+  "DGAS_&_RDGAS": [
+    "algorithmically-generated1.com",
+    "dga-domain.com"
+  ],
+  "DGA_Malware": [
+    "malware-generated1.com",
+    "bot-created.com"
+  ],
+  "DNST_Tunneling": [
+    "dns-tunnel.com",
+    "covert-channel.com"
+  ]
+}
