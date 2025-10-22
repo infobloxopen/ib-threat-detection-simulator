@@ -40,12 +40,12 @@ cd ib-threat-detection-simulator/threat_detection_simulator && chmod +x run.sh &
 
 # With DNS server options
 ./run.sh debug basic
-./run.sh info advanced --dns-server 8.8.8.8
+./run.sh info advanced 
 
 ## Parameters
 - **First Parameter**: `debug` | `info` (log level) 
 - **Second Parameter**: `basic` | `advanced` (analysis mode)
-- **DNS Server**: `--dns-server 8.8.8.8`, etc.
+
 
 ## Output
 
