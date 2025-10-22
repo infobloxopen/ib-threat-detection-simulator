@@ -6,7 +6,13 @@ This is the main entry point for the threat detection simulator v2, which orches
 the complete threat analysis pipeline: sampling, digging, and threat event fetching.
 
 Key features:
-- Automatic VM metadata detection from GCP
+- Au        try:
+            result = sampler.sample_domains(category, args.sample_count, simulation_mode=args.simulation_mode)
+            sampled_domains[category] = result
+            logger.info(f"   ✅ {category}: {result.count} domains sampled")
+        except Exception as e:
+            logger.error(f"   ❌ {category}: sampling failed - {e}")
+            continue VM metadata detection from GCP
 - Dynamic domain generation (DGA and DNST) 
 - Real DNS execution (no simulations)
 - Comprehensive threat event analysis
@@ -130,162 +136,15 @@ Output Formats:
 
 def save_results(results: Dict, output_format: str, mode: str) -> None:
     """Save analysis results to files in v1-compatible format"""
-    import csv
-    
-    # Create output directory (same as v1)
-    output_dir = Path("category_output")
-    output_dir.mkdir(exist_ok=True)
-    
-    # Define CSV headers based on output format (same as v1)
-    if output_format == 'advanced':
-        csv_headers = [
-            "Domain Category",
-            "Client DNS Query Domain", 
-            "DNS Query in DNS logs",
-            "Distinct domains in DNS logs",
-            "Total Threat Count",
-            "Distinct domain Threat Count", 
-            "Detection Rate (%)"
-        ]
-    else:
-        csv_headers = [
-            "Domain Category",
-            "Client DNS Query Domain",
-            "Total Threat Count", 
-            "Distinct domain Threat Count",
-            "Detection Rate (%)"
-        ]
-    
-    # Build CSV data and calculate totals
-    csv_data = []
-    total_client_queries = 0
-    total_dns_queries = 0
-    total_dns_domains = 0
-    total_threat_counts = 0
-    total_threat_domains = 0
-    
-    # Process each category
-    for category_name, category_data in results.items():
-        if hasattr(category_data, 'domains'):
-            # Get REAL data from actual results - NO HARDCODING
-            client_count = len(category_data.domains)
-            total_client_queries += client_count
-            
-            # Get actual DNS query results
-            dns_count = len(getattr(category_data, 'successful_domains', category_data.domains))
-            dns_domains = len(set(getattr(category_data, 'successful_domains', category_data.domains)))
-            
-            # Get actual threat detection results
-            detected_domains = getattr(category_data, 'detected_domains', [])
-            threat_count = len(detected_domains)
-            threat_domains = len(set(detected_domains))
-            
-            # Calculate REAL detection rate
-            detection_rate = (threat_domains / client_count * 100) if client_count > 0 else 0.0
-            
-            total_dns_queries += dns_count
-            total_dns_domains += dns_domains
-            total_threat_counts += threat_count
-            total_threat_domains += threat_domains
-            
-            # Build CSV row with REAL data
-            row = {
-                "Domain Category": category_name,
-                "Client DNS Query Domain": client_count,
-                "Total Threat Count": threat_count,
-                "Distinct domain Threat Count": threat_domains,
-                "Detection Rate (%)": f"{detection_rate:.2f}"
-            }
-            
-            if output_format == 'advanced':
-                row["DNS Query in DNS logs"] = dns_count
-                row["Distinct domains in DNS logs"] = dns_domains
-            
-            csv_data.append(row)
-    
-    # Calculate overall detection rate
-    overall_detection_rate = (total_threat_domains / total_client_queries * 100) if total_client_queries > 0 else 0.0
-    
-    # Add TOTAL row
-    total_row = {
-        "Domain Category": "TOTAL",
-        "Client DNS Query Domain": total_client_queries,
-        "Total Threat Count": total_threat_counts,
-        "Distinct domain Threat Count": total_threat_domains,
-        "Detection Rate (%)": f"{overall_detection_rate:.2f}"
-    }
-    
-    if output_format == 'advanced':
-        total_row["DNS Query in DNS logs"] = total_dns_queries
-        total_row["Distinct domains in DNS logs"] = total_dns_domains
-    
-    csv_data.append(total_row)
-    
-    # Write CSV file (same filename as v1)
-    csv_file = output_dir / "threat_detection_results.csv"
-    with open(csv_file, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=csv_headers)
-        writer.writeheader()
-        
-        # Add simulation note (same as v1)
-        note_row = {}
-        for header in csv_headers:
-            if header == 'Domain Category':
-                note_row[header] = "NOTE: SIMULATION"
-            elif header == 'Client DNS Query Domain':
-                note_row[header] = "For simulating DNST we are using 1 TLD as input for exfiltration and we get multiple events with same TLD"
-            else:
-                note_row[header] = ""
-        writer.writerow(note_row)
-        
-        # Add empty row for separation
-        empty_row = {header: "" for header in csv_headers}
-        writer.writerow(empty_row)
-        
-        # Write actual data
-        writer.writerows(csv_data)
-    
-    # Save domain cache (same as v1)
-    used_domains = {}
-    for category_name, category_data in results.items():
-        if hasattr(category_data, 'domains'):
-            used_domains[category_name] = category_data.domains
-    
-    save_domain_cache(str(output_dir), used_domains)
-    
-    # Save individual category files (same as v1)
-    save_individual_category_files(output_dir, results)
-    
-    # Print summary in v1 format
-    logging.info("="*80)
-    logging.info("📊 THREAT DETECTION SIMULATION SUMMARY")
-    logging.info("="*80)
-    logging.info("⚠️  NOTE: SIMULATION - For simulating DNST we are using 1 TLD as input for exfiltration and we get multiple events with same TLD")
-    logging.info("="*80)
-    logging.info(f"📁 CSV file generated: {csv_file}")
-    logging.info(f"🎯 Output Format: {output_format.upper()}")
-    logging.info("")
-    logging.info("📈 Category Breakdown:")
-    
-    # Print category breakdown using REAL data from results
-    for category_name, category_data in results.items():
-        if hasattr(category_data, 'domains'):
-            # Use ACTUAL data from the analysis - NO HARDCODING
-            client_count = len(category_data.domains)
-            
-            # Get real DNS query results
-            dns_count = len(getattr(category_data, 'successful_domains', category_data.domains))
-            dns_domains = len(set(getattr(category_data, 'successful_domains', category_data.domains)))
-            
-            # Get real threat detection results
-            detected_domains = getattr(category_data, 'detected_domains', [])
-            threat_count = len(detected_domains)
-            threat_domains = len(set(detected_domains))
-            
-            # Calculate REAL detection rate
-            detection_rate = (threat_domains / client_count * 100) if client_count > 0 else 0.0
-            
-            logging.info(f"{category_name:<20} | Client: {client_count:3} | DNS: {dns_count:3} | DNS Domains: {dns_domains:3} | Threats: {threat_count:3} | Threat Domains: {threat_domains:3} | Detection: {detection_rate:6.2f}%")
+    # This function is kept for backward compatibility
+    # The actual saving is now done in save_v1_compatible_results
+    pass
+
+
+def save_domain_cache(output_dir: str, used_domains: Dict[str, List[str]]) -> None:
+    """Legacy save domain cache function"""
+    from utils.results_saver import save_domain_cache as new_save_domain_cache
+    new_save_domain_cache(output_dir, used_domains)
 
 
 def save_individual_category_files(output_dir: Path, results: Dict) -> None:
@@ -414,7 +273,7 @@ def sample_domains_for_mode(sampler, args, mode: str) -> Dict:
     
     for category in categories_to_sample:
         try:
-            result = sampler.sample_domains(category, args.sample_count)
+            result = sampler.sample_domains(category, args.sample_count, simulation_mode=args.simulation_mode)
             sampled_domains[category] = result
             logger.info(f"   ✅ {category}: {len(result.domains)} domains sampled")
         except Exception as e:
@@ -484,9 +343,10 @@ def main():
         
         logger.info(f"✅ Threat analysis completed: {total_detected}/{total_successful} threats detected ({overall_detection_rate:.1f}%)")
         
-        # Save results
-        logger.info("💾 Saving analysis results...")
-        save_results(threat_results, args.output_format, args.mode)
+        # Save results in v1-compatible format
+        logger.info("💾 Saving analysis results in v1-compatible format...")
+        from utils.results_saver import save_v1_compatible_results
+        save_v1_compatible_results(threat_results, dig_results, args.output_format, args.mode, vm_metadata)
         
         # Final summary
         logger.info("=" * 80)

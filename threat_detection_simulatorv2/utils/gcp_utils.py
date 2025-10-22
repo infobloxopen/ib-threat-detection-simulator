@@ -26,11 +26,11 @@ import urllib.error
 
 logger = logging.getLogger(__name__)
 
-# Constants
+# Configuration constants
 METADATA_SERVER_URL = "http://metadata.google.internal/computeMetadata/v1"
 METADATA_HEADERS = {"Metadata-Flavor": "Google"}
-DEFAULT_TIMEOUT = 5
-GCLOUD_TIMEOUT = 10
+METADATA_TIMEOUT = 5
+GCLOUD_TIMEOUT = 60  # Increased from 10 to 60 seconds to handle slow gcloud responses
 
 
 class GCPError(Exception):
@@ -146,7 +146,7 @@ def get_vm_metadata() -> Dict[str, str]:
         raise MetadataServerError(error_msg)
 
 
-def _make_metadata_request(path: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+def _make_metadata_request(path: str, timeout: int = METADATA_TIMEOUT) -> str:
     """
     Make a request to the GCP metadata server
     
@@ -365,13 +365,13 @@ def validate_gcp_environment() -> Tuple[bool, List[str]]:
         
         # Test gcloud availability
         try:
-            _run_gcloud_command(["gcloud", "version"], timeout=5)
+            _run_gcloud_command(["gcloud", "version"], timeout=60)
         except GCloudError as e:
             issues.append(f"gcloud CLI not available: {e}")
         
         # Test current project configuration
         try:
-            result = _run_gcloud_command(["gcloud", "config", "get-value", "project"], timeout=5)
+            result = _run_gcloud_command(["gcloud", "config", "get-value", "project"], timeout=60)
             if not result.strip():
                 issues.append("No default project configured in gcloud")
         except GCloudError as e:

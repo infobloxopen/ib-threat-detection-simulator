@@ -264,7 +264,7 @@ class DependencyChecker:
                     [gcloud_path, "version"],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=60
                 )
                 if result.returncode == 0:
                     self.result.add_success(
@@ -277,7 +277,7 @@ class DependencyChecker:
                         [gcloud_path, "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
                         capture_output=True,
                         text=True,
-                        timeout=10
+                        timeout=60
                     )
                     if auth_result.returncode == 0 and auth_result.stdout.strip():
                         self.result.add_success(
@@ -390,11 +390,12 @@ class DependencyChecker:
         
         try:
             # Quick test of Cloud Logging read access
+            # Use proper timestamp format: timestamp>="2023-01-01T00:00:00Z" or just fetch recent logs
             result = subprocess.run(
-                [gcloud_path, "logging", "read", 'timestamp>="-5m"', "--limit=1", "--quiet"],
+                [gcloud_path, "logging", "read", "--limit=1", "--quiet"],
                 capture_output=True,
                 text=True,
-                timeout=15
+                timeout=60
             )
             
             if result.returncode == 0:

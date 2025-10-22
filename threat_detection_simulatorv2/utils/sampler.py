@@ -202,7 +202,7 @@ class ThreatDomainSampler:
             )
         logger.info(f"🎯 Initialized {len(SUPPORTED_CATEGORIES)} category sample objects")
     
-    def sample_domains(self, category: str, count: int, random_seed: Optional[int] = None) -> CategorySample:
+    def sample_domains(self, category: str, count: int, random_seed: Optional[int] = None, simulation_mode: bool = False) -> CategorySample:
         """
         Sample domains for a specific category, respecting TTL cache.
         Handles both static indicators from JSON and dynamic generation for DGA/DNST.
@@ -247,8 +247,16 @@ class ThreatDomainSampler:
             # DNST typically uses one base domain that gets dynamically extended
             base_domain = "ladytisiphone.com"  # Standard DNST test domain
             
-            # Execute real DNS tunneling - this is the whole point of threat detection testing
-            dnst_domain = generate_dnst_data_exfiltration(base_domain)
+            if simulation_mode:
+                # In simulation mode, generate a fake DNST domain without real DNS execution
+                logger.info("🧪 SIMULATION MODE: Creating simulated DNST domain (no real DNS execution)")
+                rand_alphnum = ''.join(random.choice('01234567890abcdefghijklmnopqrstuvwxyz') for _ in range(10))
+                dnst_domain = f"scr.{rand_alphnum}.{base_domain}"
+                logger.info(f"🎯 Simulated DNST domain: {dnst_domain}")
+            else:
+                # Execute real DNS tunneling - this is the whole point of threat detection testing
+                logger.info("🔥 REAL MODE: Executing actual DNS tunneling (real DNS queries)")
+                dnst_domain = generate_dnst_data_exfiltration(base_domain)
             
             # For DNST, we return the same domain multiple times as it's used repeatedly
             domains = [dnst_domain] * count

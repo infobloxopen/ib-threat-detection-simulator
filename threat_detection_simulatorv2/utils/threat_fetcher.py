@@ -193,7 +193,7 @@ class ThreatEventFetcher:
     
     def _generate_simulated_threat_events(self, domains: List[str], category: str) -> List[ThreatEvent]:
         """
-        Generate simulated threat events for testing purposes
+        Generate simulated threat events for testing purposes with realistic detection rates
         
         Args:
             domains: List of domains to simulate threats for
@@ -202,6 +202,8 @@ class ThreatEventFetcher:
         Returns:
             List of simulated ThreatEvent objects
         """
+        import random
+        
         threat_events = []
         
         # Map categories to threat IDs (based on v1 analysis)
@@ -218,11 +220,31 @@ class ThreatEventFetcher:
             "DNST_Tunneling": "TI-DNST"
         }
         
-        threat_id = threat_id_mapping.get(category, "Malicious_Generic")
+        # Realistic detection rates by category (based on threat intelligence effectiveness)
+        detection_rates = {
+            "Phishing": 0.75,           # High detection for known phishing
+            "Lookalikes": 0.65,         # Medium-high for lookalike domains
+            "TDS": 0.70,                # High for traffic direction systems
+            "Command_&_Control": 0.80,  # Very high for C&C domains
+            "DGAS_&_RDGAS": 0.60,       # Medium for legacy DGA category
+            "Emerging_Domains": 0.45,   # Lower for new/emerging threats
+            "High_Risk": 0.85,          # Very high for known high-risk
+            "Malicious_Domains": 0.90,  # Very high for confirmed malicious
+            "DGA_Malware": 0.75,        # High for DGA domains
+            "DNST_Tunneling": 0.95      # Very high for DNS tunneling patterns
+        }
         
-        # Simulate threat detection for most domains (high detection rate for testing)
-        detected_count = max(1, int(len(domains) * 0.85))  # 85% detection rate
-        detected_domains = domains[:detected_count]
+        threat_id = threat_id_mapping.get(category, "Malicious_Generic")
+        detection_rate = detection_rates.get(category, 0.50)  # Default 50% if unknown
+        
+        # Use randomization for realistic simulation
+        random.seed(42)  # Fixed seed for reproducible testing
+        detected_domains = []
+        
+        for domain in domains:
+            # Each domain has individual chance based on category detection rate
+            if random.random() < detection_rate:
+                detected_domains.append(domain)
         
         for i, domain in enumerate(detected_domains):
             timestamp = (datetime.now(timezone.utc) - timedelta(minutes=i*2)).isoformat()
@@ -255,7 +277,8 @@ class ThreatEventFetcher:
             )
             threat_events.append(threat_event)
         
-        logger.info(f"🧪 Simulated {len(threat_events)} threat events for {category}")
+        actual_detection_rate = (len(threat_events) / len(domains) * 100) if domains else 0
+        logger.info(f"🧪 Simulated {len(threat_events)} threat events for {category} ({actual_detection_rate:.1f}% detection)")
         return threat_events
     
     def _build_domain_filter(self, domains: List[str]) -> str:
