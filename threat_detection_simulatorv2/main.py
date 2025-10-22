@@ -129,67 +129,227 @@ Output Formats:
 
 
 def save_results(results: Dict, output_format: str, mode: str) -> None:
-    """Save analysis results to files"""
-    # Create output directory
-    output_dir = Path("output")
+    """Save analysis results to files in v1-compatible format"""
+    import csv
+    
+    # Create output directory (same as v1)
+    output_dir = Path("category_output")
     output_dir.mkdir(exist_ok=True)
     
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    # Define CSV headers based on output format (same as v1)
+    if output_format == 'advanced':
+        csv_headers = [
+            "Domain Category",
+            "Client DNS Query Domain", 
+            "DNS Query in DNS logs",
+            "Distinct domains in DNS logs",
+            "Total Threat Count",
+            "Distinct domain Threat Count", 
+            "Detection Rate (%)"
+        ]
+    else:
+        csv_headers = [
+            "Domain Category",
+            "Client DNS Query Domain",
+            "Total Threat Count", 
+            "Distinct domain Threat Count",
+            "Detection Rate (%)"
+        ]
     
-    # Save complete results as JSON
-    json_file = output_dir / f"threat_analysis_v2_{mode}_{timestamp}.json"
+    # Build CSV data and calculate totals
+    csv_data = []
+    total_client_queries = 0
+    total_dns_queries = 0
+    total_dns_domains = 0
+    total_threat_counts = 0
+    total_threat_domains = 0
     
-    # Convert results to serializable format
-    serializable_results = {}
-    for category, result in results.items():
-        if hasattr(result, 'to_dict'):
-            serializable_results[category] = result.to_dict()
-        else:
-            serializable_results[category] = result
+    # Process each category
+    for category_name, category_data in results.items():
+        if hasattr(category_data, 'domains'):
+            # Get REAL data from actual results - NO HARDCODING
+            client_count = len(category_data.domains)
+            total_client_queries += client_count
+            
+            # Get actual DNS query results
+            dns_count = len(getattr(category_data, 'successful_domains', category_data.domains))
+            dns_domains = len(set(getattr(category_data, 'successful_domains', category_data.domains)))
+            
+            # Get actual threat detection results
+            detected_domains = getattr(category_data, 'detected_domains', [])
+            threat_count = len(detected_domains)
+            threat_domains = len(set(detected_domains))
+            
+            # Calculate REAL detection rate
+            detection_rate = (threat_domains / client_count * 100) if client_count > 0 else 0.0
+            
+            total_dns_queries += dns_count
+            total_dns_domains += dns_domains
+            total_threat_counts += threat_count
+            total_threat_domains += threat_domains
+            
+            # Build CSV row with REAL data
+            row = {
+                "Domain Category": category_name,
+                "Client DNS Query Domain": client_count,
+                "Total Threat Count": threat_count,
+                "Distinct domain Threat Count": threat_domains,
+                "Detection Rate (%)": f"{detection_rate:.2f}"
+            }
+            
+            if output_format == 'advanced':
+                row["DNS Query in DNS logs"] = dns_count
+                row["Distinct domains in DNS logs"] = dns_domains
+            
+            csv_data.append(row)
     
-    with open(json_file, 'w') as f:
-        json.dump(serializable_results, f, indent=2, default=str)
+    # Calculate overall detection rate
+    overall_detection_rate = (total_threat_domains / total_client_queries * 100) if total_client_queries > 0 else 0.0
     
-    logging.info(f"📁 Complete results saved to: {json_file}")
+    # Add TOTAL row
+    total_row = {
+        "Domain Category": "TOTAL",
+        "Client DNS Query Domain": total_client_queries,
+        "Total Threat Count": total_threat_counts,
+        "Distinct domain Threat Count": total_threat_domains,
+        "Detection Rate (%)": f"{overall_detection_rate:.2f}"
+    }
     
-    # Generate summary report
-    summary_file = output_dir / f"threat_summary_v2_{mode}_{timestamp}.txt"
+    if output_format == 'advanced':
+        total_row["DNS Query in DNS logs"] = total_dns_queries
+        total_row["Distinct domains in DNS logs"] = total_dns_domains
     
-    with open(summary_file, 'w') as f:
-        f.write("Threat Detection Simulator v2 - Analysis Summary\n")
-        f.write("=" * 60 + "\n\n")
-        f.write(f"Execution Mode: {mode.upper()}\n")
-        f.write(f"Output Format: {output_format}\n")
-        f.write(f"Timestamp: {datetime.now().isoformat()}\n\n")
+    csv_data.append(total_row)
+    
+    # Write CSV file (same filename as v1)
+    csv_file = output_dir / "threat_detection_results.csv"
+    with open(csv_file, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=csv_headers)
+        writer.writeheader()
         
-        total_categories = len(results)
-        total_domains = sum(len(result.domains) if hasattr(result, 'domains') else 0 for result in results.values())
-        total_successful = sum(len(result.successful_domains) if hasattr(result, 'successful_domains') else 0 for result in results.values())
-        total_detected = sum(len(result.detected_domains) if hasattr(result, 'detected_domains') else 0 for result in results.values())
+        # Add simulation note (same as v1)
+        note_row = {}
+        for header in csv_headers:
+            if header == 'Domain Category':
+                note_row[header] = "NOTE: SIMULATION"
+            elif header == 'Client DNS Query Domain':
+                note_row[header] = "For simulating DNST we are using 1 TLD as input for exfiltration and we get multiple events with same TLD"
+            else:
+                note_row[header] = ""
+        writer.writerow(note_row)
         
-        f.write("📊 Overall Statistics:\n")
-        f.write(f"   Categories Analyzed: {total_categories}\n")
-        f.write(f"   Total Domains: {total_domains}\n")
-        f.write(f"   Successfully Resolved: {total_successful}\n")
-        f.write(f"   Threats Detected: {total_detected}\n")
+        # Add empty row for separation
+        empty_row = {header: "" for header in csv_headers}
+        writer.writerow(empty_row)
         
-        if total_successful > 0:
-            detection_rate = (total_detected / total_successful) * 100
-            f.write(f"   Detection Rate: {detection_rate:.1f}%\n")
-        
-        f.write("\n📋 Per-Category Results:\n")
-        f.write("-" * 40 + "\n")
-        
-        for category, result in results.items():
-            f.write(f"\n{category}:\n")
-            if hasattr(result, 'threat_summary'):
-                summary = result.threat_summary
-                f.write(f"   Domains: {len(result.domains) if hasattr(result, 'domains') else 0}\n")
-                f.write(f"   Successful: {summary.get('total_successful_domains', 0)}\n")
-                f.write(f"   Detected: {summary.get('detected_domains_count', 0)}\n")
-                f.write(f"   Detection Rate: {summary.get('detection_rate', 0):.1f}%\n")
+        # Write actual data
+        writer.writerows(csv_data)
     
-    logging.info(f"📄 Summary report saved to: {summary_file}")
+    # Save domain cache (same as v1)
+    used_domains = {}
+    for category_name, category_data in results.items():
+        if hasattr(category_data, 'domains'):
+            used_domains[category_name] = category_data.domains
+    
+    save_domain_cache(str(output_dir), used_domains)
+    
+    # Save individual category files (same as v1)
+    save_individual_category_files(output_dir, results)
+    
+    # Print summary in v1 format
+    logging.info("="*80)
+    logging.info("📊 THREAT DETECTION SIMULATION SUMMARY")
+    logging.info("="*80)
+    logging.info("⚠️  NOTE: SIMULATION - For simulating DNST we are using 1 TLD as input for exfiltration and we get multiple events with same TLD")
+    logging.info("="*80)
+    logging.info(f"📁 CSV file generated: {csv_file}")
+    logging.info(f"🎯 Output Format: {output_format.upper()}")
+    logging.info("")
+    logging.info("📈 Category Breakdown:")
+    
+    # Print category breakdown using REAL data from results
+    for category_name, category_data in results.items():
+        if hasattr(category_data, 'domains'):
+            # Use ACTUAL data from the analysis - NO HARDCODING
+            client_count = len(category_data.domains)
+            
+            # Get real DNS query results
+            dns_count = len(getattr(category_data, 'successful_domains', category_data.domains))
+            dns_domains = len(set(getattr(category_data, 'successful_domains', category_data.domains)))
+            
+            # Get real threat detection results
+            detected_domains = getattr(category_data, 'detected_domains', [])
+            threat_count = len(detected_domains)
+            threat_domains = len(set(detected_domains))
+            
+            # Calculate REAL detection rate
+            detection_rate = (threat_domains / client_count * 100) if client_count > 0 else 0.0
+            
+            logging.info(f"{category_name:<20} | Client: {client_count:3} | DNS: {dns_count:3} | DNS Domains: {dns_domains:3} | Threats: {threat_count:3} | Threat Domains: {threat_domains:3} | Detection: {detection_rate:6.2f}%")
+
+
+def save_individual_category_files(output_dir: Path, results: Dict) -> None:
+    """Save individual JSON files for each category (same as v1)"""
+    for category_name, category_data in results.items():
+        if not hasattr(category_data, 'domains'):
+            continue
+            
+        # Clean category name for filename (replace & with _and_)
+        clean_category = category_name.replace('&', '_and_').replace(' ', '_')
+        
+        try:
+            # 1. Save DNS logs file
+            dns_logs_file = output_dir / f"dns_logs_{clean_category}.json"
+            dns_logs_data = getattr(category_data, 'dns_logs', [])
+            with open(dns_logs_file, 'w') as f:
+                json.dump(dns_logs_data, f, indent=2, default=str)
+            
+            # 2. Save threat events file  
+            threat_events_file = output_dir / f"threat_event_{clean_category}.json"
+            threat_events_data = getattr(category_data, 'threat_events', [])
+            with open(threat_events_file, 'w') as f:
+                json.dump(threat_events_data, f, indent=2, default=str)
+            
+            # 3. Save non-detected domains file
+            non_detected_file = output_dir / f"non_detected_domains_{clean_category}.json"
+            
+            # Calculate non-detected domains
+            all_domains = set(category_data.domains)
+            detected_domains = set(getattr(category_data, 'detected_domains', []))
+            non_detected = list(all_domains - detected_domains)
+            
+            with open(non_detected_file, 'w') as f:
+                json.dump(non_detected, f, indent=2)
+                
+            logging.debug(f"📁 Saved individual files for {category_name}")
+            
+        except Exception as e:
+            logging.error(f"❌ Error saving individual files for {category_name}: {e}")
+
+
+def save_domain_cache(output_dir: str, used_domains: Dict[str, List[str]]) -> None:
+    """Save used domains to cache file with current timestamp (v1 compatible)"""
+    cache_path = Path(output_dir) / "domain_cache.json"
+    current_timestamp = datetime.now().isoformat()
+    
+    # Create cache data structure (same as v1)
+    cache_data = {}
+    for category, domains in used_domains.items():
+        cache_data[category] = {
+            'domains': domains,
+            'timestamp': current_timestamp
+        }
+    
+    try:
+        with open(cache_path, 'w') as f:
+            json.dump(cache_data, f, indent=2)
+        
+        total_domains = sum(len(domains) for domains in used_domains.values())
+        logging.info(f"💾 Saved domain cache: {total_domains} domains across {len(used_domains)} categories")
+        logging.info(f"� Cache file: {cache_path}")
+        
+    except Exception as e:
+        logging.error(f"❌ Error saving domain cache: {e}")
 
 
 def run_preflight_and_setup(args) -> Dict[str, str]:

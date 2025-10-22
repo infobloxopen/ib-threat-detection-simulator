@@ -113,7 +113,7 @@ class ThreatEventFetcher:
                  project_id: Optional[str] = None,
                  vm_instance_id: Optional[str] = None,
                  vm_zone: Optional[str] = None,
-                 hours_back: float = 2.0,
+                 hours_back: float = 3.0,
                  max_entries: int = 5000,
                  auto_detect: bool = True):
         """
@@ -426,9 +426,14 @@ timestamp<="{end_timestamp}"'''
         for event in threat_events:
             try:
                 # For DNST tunneling, use threatIndicator instead of query_name
-                if 'DNST' in event.threat_id and event.raw_entry:
-                    threat_info = event.raw_entry.get('jsonPayload', {}).get('threatInfo', {})
-                    domain = threat_info.get('threatIndicator', '')
+                # because query_name contains the full tunneling domain while
+                # threatIndicator contains the base domain we actually queried
+                if 'DNST' in event.threat_id or 'TI-DNST' in event.threat_id:
+                    if event.raw_entry:
+                        threat_info = event.raw_entry.get('jsonPayload', {}).get('threatInfo', {})
+                        domain = threat_info.get('threatIndicator', event.query_name)
+                    else:
+                        domain = event.query_name
                 else:
                     # For non-DNST threats, use query_name
                     domain = event.query_name
@@ -473,17 +478,31 @@ timestamp<="{end_timestamp}"'''
             }
             return threat_result
         
-        logger.info(f"🔍 Fetching threats for {dig_result.category}: {len(dig_result.successful_domains)} successful domains")
+        # For DNST, deduplicate domains before threat fetching
+        # DNST generates multiple queries to the same domain (tunneling segments)
+        # but we only need to check threats for unique domains
+        is_dnst = 'DNST' in dig_result.category.upper() or 'TUNNELING' in dig_result.category.upper()
+        
+        if is_dnst:
+            # Deduplicate domains for DNST categories
+            unique_domains_for_threat_search = list(set(dig_result.successful_domains))
+            logger.info(f"🔗 DNST {dig_result.category}: Deduplicating {len(dig_result.successful_domains)} queries to {len(unique_domains_for_threat_search)} unique domains")
+            domains_for_threat_search = unique_domains_for_threat_search
+        else:
+            # For non-DNST categories, use all successful domains
+            domains_for_threat_search = dig_result.successful_domains
+        
+        logger.info(f"🔍 Fetching threats for {dig_result.category}: {len(domains_for_threat_search)} domains to search")
         
         # Fetch threat events based on mode
         if self.mode == "simulation":
             threat_events = self._generate_simulated_threat_events(
-                dig_result.successful_domains, 
+                domains_for_threat_search, 
                 dig_result.category
             )
         else:  # GCP mode
             threat_events = self._fetch_gcp_threat_logs(
-                dig_result.successful_domains,
+                domains_for_threat_search,
                 dig_result.category,
                 start_time,
                 end_time
@@ -492,17 +511,45 @@ timestamp<="{end_timestamp}"'''
         # Extract detected domains from threat events
         detected_domains_set = set()
         for event in threat_events:
+            # For DNST, use threatIndicator if available, otherwise use query_name
+            if is_dnst and event.raw_entry:
+                threat_info = event.raw_entry.get('jsonPayload', {}).get('threatInfo', {})
+                domain = threat_info.get('threatIndicator', event.query_name)
+            else:
+                domain = event.query_name
+            
             # Normalize domain for matching
-            domain = event.query_name.rstrip('.').lower()
+            domain = domain.rstrip('.').lower()
             detected_domains_set.add(domain)
         
-        # Filter detected domains to only include successfully resolved ones
-        successful_domains_lower = {d.lower() for d in dig_result.successful_domains}
-        detected_domains = [d for d in detected_domains_set if d in successful_domains_lower]
-        
-        # Calculate undetected domains
-        undetected_domains = [d for d in dig_result.successful_domains 
-                             if d.lower() not in detected_domains_set]
+        # Calculate detection metrics with DNST-specific logic like v1
+        if is_dnst:
+            # For DNST: count detection based on unique domains queried vs unique domains detected
+            # This matches v1 logic: detection_rate = threats_found / total_queried_domains
+            unique_queried_domains = {d.lower() for d in dig_result.successful_domains}
+            detected_domains = [d for d in detected_domains_set if d in unique_queried_domains]
+            undetected_domains = [d for d in unique_queried_domains if d not in detected_domains_set]
+            
+            # For DNST, base calculation on unique domains, not individual queries
+            total_unique_domains = len(unique_queried_domains)
+            detected_count = len(detected_domains)
+            undetected_count = len(undetected_domains)
+            detection_rate = (detected_count / total_unique_domains * 100) if total_unique_domains > 0 else 0.0
+            
+            logger.info(f"🔗 DNST Detection Logic for {dig_result.category}: {detected_count} threats detected "
+                       f"from {total_unique_domains} unique domain(s) tested → {detection_rate:.1f}% detection rate")
+        else:
+            # Standard categories: count successful dig queries vs detected domains
+            # This matches v1 logic for non-DNST categories
+            successful_domains_lower = {d.lower() for d in dig_result.successful_domains}
+            detected_domains = [d for d in detected_domains_set if d in successful_domains_lower]
+            undetected_domains = [d for d in dig_result.successful_domains 
+                                 if d.lower() not in detected_domains_set]
+            
+            total_successful = len(dig_result.successful_domains)
+            detected_count = len(detected_domains)
+            undetected_count = len(undetected_domains)
+            detection_rate = (detected_count / total_successful * 100) if total_successful > 0 else 0.0
         
         # Update threat result
         threat_result.threat_events = threat_events
@@ -510,13 +557,8 @@ timestamp<="{end_timestamp}"'''
         threat_result.undetected_domains = undetected_domains
         
         # Calculate summary statistics
-        total_successful = len(dig_result.successful_domains)
-        detected_count = len(detected_domains)
-        undetected_count = len(undetected_domains)
-        detection_rate = (detected_count / total_successful * 100) if total_successful > 0 else 0.0
-        
         threat_result.threat_summary = {
-            'total_successful_domains': total_successful,
+            'total_successful_domains': len(dig_result.successful_domains),
             'detected_domains_count': detected_count,
             'undetected_domains_count': undetected_count,
             'detection_rate': detection_rate,
@@ -524,7 +566,7 @@ timestamp<="{end_timestamp}"'''
         }
         
         logger.info(f"📊 {dig_result.category} threat detection: "
-                   f"{detected_count}/{total_successful} detected ({detection_rate:.1f}%)")
+                   f"{detected_count}/{len(dig_result.successful_domains)} detected ({detection_rate:.1f}%)")
         
         if undetected_count > 0:
             logger.info(f"⚠️ {dig_result.category}: {undetected_count} domains had no threat detection")
@@ -575,7 +617,7 @@ def fetch_threats_for_categories(dig_results: Dict[str, CategoryDigResult],
                                project_id: Optional[str] = None,
                                vm_instance_id: Optional[str] = None,
                                vm_zone: Optional[str] = None,
-                               hours_back: float = 2.0,
+                               hours_back: float = 3.0,
                                start_time: Optional[datetime] = None,
                                end_time: Optional[datetime] = None,
                                auto_detect: bool = True) -> Dict[str, CategoryThreatResult]:
