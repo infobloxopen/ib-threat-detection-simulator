@@ -723,40 +723,37 @@ timestamp<="{end_timestamp}"'''
             threat_events = self._run_salvage(threat_events, domains_for_threat_search, dig_result, start_time)
             threat_events = self._run_streaming(threat_events, domains_for_threat_search, dig_result, start_time)
 
-        # Compute domain-level detection metrics (still returned for distinct threat domain counts)
+        # Compute domain-level detection metrics (distinct threat domains and legacy rate)
         detected_domains, undetected_domains, detected_count, undetected_count, _legacy_rate = self._compute_detection_metrics(
             dig_result, threat_events, is_dnst
         )
-        # New unified detection rate: total threat events per successful dig domain (can exceed 100%)
-        successful_dig_total = len(dig_result.successful_domains)
-        detection_rate = (len(threat_events) / successful_dig_total * 100) if successful_dig_total else 0.0
+        successful_unique = len(set(dig_result.successful_domains))
+        detection_rate = (detected_count / successful_unique * 100) if successful_unique else 0.0
+        previous_events_domain_rate = (len(threat_events) / len(dig_result.successful_domains) * 100) if dig_result.successful_domains else 0.0
         
         # Update threat result
         threat_result.threat_events = threat_events
         threat_result.detected_domains = detected_domains
         threat_result.undetected_domains = undetected_domains
         # Populate dns_logs with raw entries (lightweight extraction) for advanced output enrichment
-        try:
-            dns_logs = []
-            for ev in threat_events:
-                dns_entry = {
-                    "timestamp": ev.timestamp,
-                    "query_name": ev.query_name,
-                    "threat_id": ev.threat_id,
-                    "threat_feed": ev.threat_feed
-                }
-                dns_logs.append(dns_entry)
-            setattr(threat_result, 'dns_logs', dns_logs)
-        except Exception as e:
-            logger.debug(f"Failed to populate dns_logs for {dig_result.category}: {e}")
+        dns_logs = []
+        for ev in threat_events:
+            dns_logs.append({
+                "timestamp": ev.timestamp,
+                "query_name": ev.query_name,
+                "threat_id": ev.threat_id,
+                "threat_feed": ev.threat_feed
+            })
+        setattr(threat_result, 'dns_logs', dns_logs)
         
         # Calculate summary statistics
         threat_result.threat_summary = {
             'total_successful_domains': len(dig_result.successful_domains),
-            'detected_domains_count': detected_count,  # distinct domains with at least one threat event
+            'detected_domains_count': detected_count,  # distinct threat domains detected
             'undetected_domains_count': undetected_count,
-            'detection_rate': detection_rate,  # events per successful dig domain (% can exceed 100)
-            'detection_rate_legacy_domain_basis': _legacy_rate,  # previous distinct-domain based rate retained for reference
+            'detection_rate': detection_rate,  # threat domains / dns domains * 100
+            'detection_rate_previous_events_per_domain': previous_events_domain_rate,
+            'detection_rate_legacy_domain_basis': _legacy_rate,
             'threat_events_count': len(threat_events),
             'fetch_duration_seconds': (end_fetch - start_fetch).total_seconds(),
             'no_logs_found': no_logs_found,
@@ -765,29 +762,18 @@ timestamp<="{end_timestamp}"'''
             'streaming_final_detected': self.health_report['late_detection']['categories_streamed'].get(dig_result.category, {}).get('final_detected_count', detected_count)
         }
 
-        # Health per-category enrichment
-        self.health_report['per_category'][dig_result.category] = {
-            'query_failed': query_failed,
-            'no_logs_found': no_logs_found,
-            'threat_events_count': len(threat_events),
-            'detected_domains_count': detected_count,
-            'undetected_domains_count': undetected_count,
-            'fetch_duration_seconds': threat_result.threat_summary['fetch_duration_seconds']
-        }
-        
         logger.info(
-            "📊 %s threat detection: %d events across %d successful domains -> %.1f%% events/domain (distinct detected domains: %d, legacy rate: %.1f%%)",
+            "📊 %s threat detection: %d events; %d/%d distinct threat domains -> %.1f%% threat rate (prev events/domain: %.1f%%, legacy domain rate: %.1f%%)",
             dig_result.category,
             len(threat_events),
-            len(dig_result.successful_domains),
-            detection_rate,
             detected_count,
+            successful_unique,
+            detection_rate,
+            previous_events_domain_rate,
             _legacy_rate
         )
-        
         if undetected_count > 0:
             logger.info(f"⚠️ {dig_result.category}: {undetected_count} domains had no threat detection")
-        
         return threat_result
     
     def fetch_threats_for_categories(self, dig_results: Dict[str, CategoryDigResult],

@@ -265,10 +265,10 @@ main() {
     # Validate arguments
     validate_arguments "$log_level" "$mode" "$ttl"
 
-    # Check if we're in the right directory
-    if [ ! -f "category_analysis_script.py" ]; then
-        print_error "category_analysis_script.py not found in current directory"
-    echo "Please run this script from the renamed 'threat_detection_simulator' directory (formerly threat_detection_simulatorv2)"
+    # Validate directory by ensuring main.py exists (primary entrypoint)
+    if [ ! -f "main.py" ]; then
+        print_error "main.py not found in current directory"
+        echo "Run this script from inside the threat_detection_simulator directory"
         exit 1
     fi
 
@@ -380,10 +380,10 @@ main() {
     fi
     
     # Execute the Python script with timeout protection
-    echo "   Command: $PYTHON_CMD category_analysis_script.py ${cmd_args[*]}"
+    echo "   Command: $PYTHON_CMD main.py ${cmd_args[*]}"
     echo
     
-    if timeout $SCRIPT_TIMEOUT $PYTHON_CMD category_analysis_script.py "${cmd_args[@]}"; then
+    if timeout $SCRIPT_TIMEOUT $PYTHON_CMD main.py "${cmd_args[@]}"; then
         local exit_code=$?
         echo
         print_status "Threat detection simulation completed successfully!"
