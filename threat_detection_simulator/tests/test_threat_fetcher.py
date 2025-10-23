@@ -1,5 +1,5 @@
 """
-Unit tests for threat_detection_simulatorv2.utils.threat_fetcher module
+Unit tests for threat_detection_simulator.utils.threat_fetcher module (directory renamed from threat_detection_simulatorv2)
 
 Tests the ThreatEventFetcher class and related functionality for fetching
 threat detection events and calculating detection rates.
@@ -11,13 +11,13 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, Mock, MagicMock
 from typing import Dict, List
 
-from threat_detection_simulatorv2.utils.threat_fetcher import (
+from threat_detection_simulator.utils.threat_fetcher import (
     ThreatEvent,
     CategoryThreatResult,
     ThreatEventFetcher,
     fetch_threats_for_categories
 )
-from threat_detection_simulatorv2.utils.digger import CategoryDigResult, DigResult
+from threat_detection_simulator.utils.digger import CategoryDigResult, DigResult
 
 
 class TestThreatEvent(unittest.TestCase):

@@ -40,6 +40,7 @@ sys.path.append('.')
 from utils.sampler import ThreatDomainSampler
 from utils.digger import dig_domains_for_categories
 from utils.threat_fetcher import fetch_threats_for_categories
+from utils.threat_fetcher import ThreatEventFetcher, FetcherConfig
 from utils.gcp_utils import get_vm_metadata_with_gcloud_fallback
 from utils.dependency_checker import run_preflight_checks
 
@@ -130,6 +131,8 @@ Output Formats:
         action='store_true',
         help='Use simulation mode for threat event fetching (for testing)'
     )
+    # NOTE: Advanced late-detection features (salvage pass & streaming/backfill) are enabled internally
+    # with sensible defaults and intentionally not exposed as CLI flags to preserve README contract.
     
     return parser.parse_args()
 
@@ -141,47 +144,27 @@ def save_results(results: Dict, output_format: str, mode: str) -> None:
     pass
 
 
-def save_domain_cache(output_dir: str, used_domains: Dict[str, List[str]]) -> None:
-    """Legacy save domain cache function"""
-    from utils.results_saver import save_domain_cache as new_save_domain_cache
-    new_save_domain_cache(output_dir, used_domains)
-
-
 def save_individual_category_files(output_dir: Path, results: Dict) -> None:
-    """Save individual JSON files for each category (same as v1)"""
+    """(Deprecated) Individual category files saving retained for backward compatibility"""
     for category_name, category_data in results.items():
         if not hasattr(category_data, 'domains'):
             continue
-            
-        # Clean category name for filename (replace & with _and_)
         clean_category = category_name.replace('&', '_and_').replace(' ', '_')
-        
         try:
-            # 1. Save DNS logs file
             dns_logs_file = output_dir / f"dns_logs_{clean_category}.json"
             dns_logs_data = getattr(category_data, 'dns_logs', [])
             with open(dns_logs_file, 'w') as f:
                 json.dump(dns_logs_data, f, indent=2, default=str)
-            
-            # 2. Save threat events file  
             threat_events_file = output_dir / f"threat_event_{clean_category}.json"
             threat_events_data = getattr(category_data, 'threat_events', [])
             with open(threat_events_file, 'w') as f:
                 json.dump(threat_events_data, f, indent=2, default=str)
-            
-            # 3. Save non-detected domains file
             non_detected_file = output_dir / f"non_detected_domains_{clean_category}.json"
-            
-            # Calculate non-detected domains
             all_domains = set(category_data.domains)
             detected_domains = set(getattr(category_data, 'detected_domains', []))
             non_detected = list(all_domains - detected_domains)
-            
             with open(non_detected_file, 'w') as f:
                 json.dump(non_detected, f, indent=2)
-                
-            logging.debug(f"📁 Saved individual files for {category_name}")
-            
         except Exception as e:
             logging.error(f"❌ Error saving individual files for {category_name}: {e}")
 
@@ -328,34 +311,90 @@ def main():
         # Determine mode for threat fetching
         threat_mode = "simulation" if args.simulation_mode else "gcp"
         
-        threat_results = fetch_threats_for_categories(
-            dig_results,
+        # Instantiate fetcher directly to capture health report & performance metrics
+        fetcher_cfg = FetcherConfig(
+            batch_size=25,
+            parallel_batches=False,
+            per_batch_timeout=60,
+            retry_attempts=3,
+            # Internal late-detection defaults (hidden):
+            salvage_enabled=True,
+            salvage_wait_seconds=5,
+            streaming_mode=True,
+            streaming_poll_interval=2.0,
+            streaming_max_seconds=30,
+            streaming_stability_rounds=2
+        )
+        fetcher = ThreatEventFetcher(
             mode=threat_mode,
             project_id=vm_metadata.get('project_id'),
             vm_instance_id=vm_metadata.get('instance_id'),
             vm_zone=vm_metadata.get('zone'),
-            hours_back=2.0
+            hours_back=2.0,
+            fast_mode=False,  # fast mode disabled by default (hidden)
+            config=fetcher_cfg
         )
+        threat_results = fetcher.fetch_threats_for_categories(dig_results)
         
-        # Log threat summary
-        total_detected = sum(len(result.detected_domains) for result in threat_results.values())
-        overall_detection_rate = (total_detected / total_successful * 100) if total_successful > 0 else 0
-        
-        logger.info(f"✅ Threat analysis completed: {total_detected}/{total_successful} threats detected ({overall_detection_rate:.1f}%)")
+        # Log threat summary (raw vs unique)
+        total_detected_raw = sum(len(result.detected_domains) for result in threat_results.values())
+        raw_detection_rate = (total_detected_raw / total_successful * 100) if total_successful > 0 else 0
+
+        unique_domain_total = 0
+        unique_detected_total = 0
+        for category, dig_result in dig_results.items():
+            unique_domains = set(dig_result.domains)
+            unique_domain_total += len(unique_domains)
+            detected_unique = set(threat_results[category].detected_domains).intersection(unique_domains)
+            unique_detected_total += len(detected_unique)
+
+        unique_detection_rate = (unique_detected_total / unique_domain_total * 100) if unique_domain_total > 0 else 0
+
+        logger.info(f"✅ Threat analysis completed (raw): {total_detected_raw}/{total_successful} detected ({raw_detection_rate:.1f}%)")
+        logger.info(f"✅ Threat analysis completed (unique domains): {unique_detected_total}/{unique_domain_total} detected ({unique_detection_rate:.1f}%)")
         
         # Save results in v1-compatible format
         logger.info("💾 Saving analysis results in v1-compatible format...")
         from utils.results_saver import save_v1_compatible_results
         save_v1_compatible_results(threat_results, dig_results, args.output_format, args.mode, vm_metadata)
+
+        # Persist performance metrics & health report
+        perf_metrics = {}
+        for cat, res in threat_results.items():
+            if hasattr(res, 'threat_summary'):
+                late_salvage = fetcher.health_report['late_detection']['categories_salvaged'].get(cat, {})
+                late_stream = fetcher.health_report['late_detection']['categories_streamed'].get(cat, {})
+                perf_metrics[cat] = {
+                    'fetch_duration_seconds': res.threat_summary.get('fetch_duration_seconds'),
+                    'detected_domains_count': res.threat_summary.get('detected_domains_count'),
+                    'undetected_domains_count': res.threat_summary.get('undetected_domains_count'),
+                    'detection_rate': res.threat_summary.get('detection_rate'),
+                    'no_logs_found': res.threat_summary.get('no_logs_found'),
+                    'query_failed': res.threat_summary.get('query_failed'),
+                    'late_salvage_added_events': late_salvage.get('added_events', 0),
+                    'late_salvage_domains': late_salvage.get('late_domains_detected', []),
+                    'streaming_final_detected_count': late_stream.get('final_detected_count'),
+                    'streaming_duration_seconds': late_stream.get('duration_seconds')
+                }
+        output_dir = Path('category_output')
+        output_dir.mkdir(exist_ok=True)
+        with open(output_dir / 'performance_metrics.json', 'w') as f:
+            json.dump(perf_metrics, f, indent=2)
+        with open(output_dir / 'health_report.json', 'w') as f:
+            json.dump(fetcher.health_report, f, indent=2)
+        logger.info("💾 Saved performance metrics: category_output/performance_metrics.json")
+        logger.info("💾 Saved health report: category_output/health_report.json")
         
-        # Final summary
+        # Final summary (provide both raw & unique domain perspectives)
         logger.info("=" * 80)
-        logger.info("🎉 Threat Detection Simulator v2 completed successfully!")
+        logger.info("🎉 Threat Detection Simulator completed successfully!")
         logger.info("📊 Final Statistics:")
         logger.info(f"   Categories: {len(threat_results)}")
-        logger.info(f"   Total Domains: {total_domains}")
-        logger.info(f"   DNS Success: {total_successful}/{total_domains} ({(total_successful/total_domains*100) if total_domains > 0 else 0:.1f}%)")
-        logger.info(f"   Threats Detected: {total_detected}/{total_successful} ({overall_detection_rate:.1f}%)")
+        logger.info(f"   Total Raw Queries: {total_domains}")
+        logger.info(f"   Total Unique Domains (DNST dedup applied): {unique_domain_total}")
+        logger.info(f"   DNS Success (raw): {total_successful}/{total_domains} ({(total_successful/total_domains*100) if total_domains > 0 else 0:.1f}%)")
+        logger.info(f"   Threats Detected (raw): {total_detected_raw}/{total_successful} ({raw_detection_rate:.1f}%)")
+        logger.info(f"   Threats Detected (unique domains): {unique_detected_total}/{unique_domain_total} ({unique_detection_rate:.1f}%)")
         logger.info("=" * 80)
         
     except KeyboardInterrupt:

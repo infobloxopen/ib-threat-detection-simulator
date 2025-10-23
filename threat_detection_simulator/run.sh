@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Enhanced Threat Detection Simulator Runner with VM Portability
+# Enhanced Threat Detection Simulator Runner with VM Portability (renamed from v2)
 # Features: Intelligent package management, timeout protection, automated setup
 #
 # PREREQUISITES:
@@ -268,7 +268,7 @@ main() {
     # Check if we're in the right directory
     if [ ! -f "category_analysis_script.py" ]; then
         print_error "category_analysis_script.py not found in current directory"
-        echo "Please run this script from the threat_detection_simulator directory"
+    echo "Please run this script from the renamed 'threat_detection_simulator' directory (formerly threat_detection_simulatorv2)"
         exit 1
     fi
 

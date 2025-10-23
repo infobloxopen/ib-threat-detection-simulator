@@ -7,15 +7,15 @@ Tests: sampler → digger → threat_fetcher pipeline
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-from threat_detection_simulatorv2.utils.sampler import ThreatDomainSampler
-from threat_detection_simulatorv2.utils.digger import dig_domains_for_categories
-from threat_detection_simulatorv2.utils.threat_fetcher import fetch_threats_for_categories
+from threat_detection_simulator.utils.sampler import ThreatDomainSampler
+from threat_detection_simulator.utils.digger import dig_domains_for_categories
+from threat_detection_simulator.utils.threat_fetcher import fetch_threats_for_categories
 
 def main():
     print('🚀 Testing v2 threat detection simulator: sampler → digger → threat_fetcher')
 
     # Sample domains
-    indicators_file = "/Users/gshterenstein/Documents/InfobloxOpen/ib-threat-detection-simulator/threat_detection_simulatorv2/ib-base-category.json"
+    indicators_file = "/Users/gshterenstein/Documents/InfobloxOpen/ib-threat-detection-simulator/threat_detection_simulator/ib-base-category.json"
     sampler = ThreatDomainSampler(indicators_file=indicators_file)
     samples = sampler.sample_all_categories(5)  # 5 domains per category
     print(f'\n📊 Sampled {len(samples)} categories')

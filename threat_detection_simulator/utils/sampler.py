@@ -21,7 +21,7 @@ from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 
-# Supported threat categories based on v1 investigation
+# Supported threat categories
 SUPPORTED_CATEGORIES = [
     "Phishing",
     "Lookalikes", 

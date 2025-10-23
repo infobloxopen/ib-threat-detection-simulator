@@ -264,7 +264,9 @@ def generate_category_json_files(threat_results: Dict, dig_results: Dict, output
                         "total_threat_events": len(getattr(threat_result, 'threat_events', [])),
                         "unique_threat_domains": len(threat_domains),
                         "domains_with_threats": list(threat_domains),
-                        "detection_rate_percent": (len(threat_domains) / len(queried_domains) * 100) if queried_domains else 0
+                        "detection_rate_percent": (
+                            len(getattr(threat_result, 'threat_events', [])) / len(successful_dig_domains) * 100
+                        ) if successful_dig_domains else 0
                     },
                     "domain_classification": {
                         "queried_domains": list(queried_domains),
@@ -279,7 +281,7 @@ def generate_category_json_files(threat_results: Dict, dig_results: Dict, output
                     },
                     "analysis_metadata": {
                         "is_dnst_category": 'DNST' in category_name.upper() or 'TUNNELING' in category_name.upper(),
-                        "detection_logic": "DNST: any queried domain in threats" if ('DNST' in category_name.upper() or 'TUNNELING' in category_name.upper()) else "Standard: successful dig domains in threats",
+                        "detection_logic": "Unified: total threat events per successful dig domain (can exceed 100%)",
                         "generation_timestamp": datetime.utcnow().isoformat()
                     }
                 }
@@ -354,34 +356,20 @@ def save_v1_compatible_results(threat_results: Dict, dig_results: Dict, output_f
         if not dig_result:
             logger.warning(f"⚠️ No dig results found for category {category_name}")
             continue
-            
-        # Get basic data
-        queried_domains = set(dig_result.domains)
+        
         detected_domains = set(threat_result.detected_domains)
         threat_count = len(getattr(threat_result, 'threat_events', []))
         
-        # DNST-specific logic (same as v1)
-        if 'DNST' in category_name.upper() or 'TUNNELING' in category_name.upper():
-            # For DNST: Client count = unique domains, detection based on unique domains
-            client_count = len(queried_domains)  # Unique domains (e.g., 1)
-            dns_count = len(dig_result.successful_domains)  # Total queries (e.g., 50)
-            dns_domains = len(queried_domains)  # Unique domains (e.g., 1)
-            
-            # DNST detection: any queried domain that appears in threat domains
-            actual_threat_detected_domains = queried_domains.intersection(detected_domains)
-            threat_domains = len(actual_threat_detected_domains)
-            
-            # DNST detection rate: detected_unique_domains / total_unique_domains * 100
-            detection_rate = (threat_domains / len(queried_domains) * 100) if queried_domains else 0.0
-        else:
-            # Standard categories
-            client_count = len(dig_result.domains)
-            dns_count = len(dig_result.successful_domains)
-            dns_domains = len(set(dig_result.successful_domains))
-            threat_domains = len(detected_domains)
-            
-            # Standard detection rate
-            detection_rate = (threat_domains / client_count * 100) if client_count > 0 else 0.0
+        # New detection rate logic (events per successful dig domain)
+        # We deliberately use total threat event count divided by successful dig domains (not sampled/client total).
+        # This can exceed 100% if multiple threat events are generated per successful domain.
+        # DNST categories now follow the same logic for consistency.
+        client_count = len(dig_result.domains)
+        dns_count = len(dig_result.successful_domains)
+        dns_domains = len(set(dig_result.successful_domains))
+        threat_domains = len(detected_domains)  # still keep distinct threat domain count for reporting
+        successful_dig_denominator = dns_count if dns_count > 0 else 0
+        detection_rate = (threat_count / successful_dig_denominator * 100) if successful_dig_denominator else 0.0
         
         total_client_queries += client_count
         total_dns_queries += dns_count
@@ -405,7 +393,8 @@ def save_v1_compatible_results(threat_results: Dict, dig_results: Dict, output_f
         csv_data.append(row)
     
     # Calculate overall detection rate
-    overall_detection_rate = (total_threat_domains / total_client_queries * 100) if total_client_queries > 0 else 0.0
+    # Overall detection now based on total threat events divided by total successful dig queries
+    overall_detection_rate = (total_threat_counts / total_dns_queries * 100) if total_dns_queries > 0 else 0.0
     
     # Add TOTAL row
     total_row = {
@@ -440,7 +429,7 @@ def save_v1_compatible_results(threat_results: Dict, dig_results: Dict, output_f
         writer.writerow(note_row)
         
         # Add empty row for separation
-        empty_row = {header: "" for header in csv_headers}
+        empty_row = dict.fromkeys(csv_headers, "")
         writer.writerow(empty_row)
         
         # Write actual data
@@ -483,29 +472,14 @@ def save_v1_compatible_results(threat_results: Dict, dig_results: Dict, output_f
         # Get real threat detection results
         threat_count = len(getattr(threat_result, 'threat_events', []))
         
-        # DNST-specific logic (same as v1)
-        if 'DNST' in category_name.upper() or 'TUNNELING' in category_name.upper():
-            # For DNST: Client count = unique domains, detection based on unique domains
-            client_count = len(queried_domains)  # Unique domains (e.g., 1)
-            dns_count = len(dig_result.successful_domains)  # Total queries (e.g., 50)  
-            dns_domains = len(queried_domains)  # Unique domains (e.g., 1)
-            
-            # DNST detection: any queried domain that appears in threat domains
-            actual_threat_detected_domains = queried_domains.intersection(detected_domains)
-            threat_domains = len(actual_threat_detected_domains)
-            
-            # DNST detection rate: detected_unique_domains / total_unique_domains * 100
-            detection_rate = (threat_domains / len(queried_domains) * 100) if queried_domains else 0.0
-        else:
-            # Standard categories
-            client_count = len(dig_result.domains)
-            dns_count = len(dig_result.successful_domains)
-            dns_domains = len(set(dig_result.successful_domains))
-            threat_domains = len(detected_domains)
-            
-            # Standard detection rate
-            detection_rate = (threat_domains / client_count * 100) if client_count > 0 else 0.0
-        
-        logger.info(f"{category_name:<20} | Client: {client_count:3} | DNS: {dns_count:3} | DNS Domains: {dns_domains:3} | Threats: {threat_count:3} | Threat Domains: {threat_domains:3} | Detection: {detection_rate:6.2f}%")
+        # Unified detection rate (events per successful dig domain)
+        client_count = len(dig_result.domains)
+        dns_count = len(dig_result.successful_domains)
+        dns_domains = len(set(dig_result.successful_domains))
+        threat_domains = len(detected_domains)
+        successful_dig_denominator = dns_count if dns_count > 0 else 0
+        detection_rate = (threat_count / successful_dig_denominator * 100) if successful_dig_denominator else 0.0
+
+        logger.info(f"{category_name:<20} | Client: {client_count:3} | DNS: {dns_count:3} | DNS Domains: {dns_domains:3} | Threats: {threat_count:3} | Threat Domains: {threat_domains:3} | Events/Domain: {detection_rate:6.2f}%")
     
     logger.info(f"✅ All results saved to: {output_dir}")

@@ -18,10 +18,26 @@ import json
 import logging
 import subprocess
 import tempfile
+import time
+import random
 from dataclasses import dataclass, field
+@dataclass
+class FetcherConfig:
+    batch_size: int = 25
+    parallel_batches: bool = False
+    max_parallel_workers: int = 3
+    per_batch_timeout: int = 60
+    retry_attempts: int = 3
+    salvage_enabled: bool = False
+    salvage_wait_seconds: int = 5
+    streaming_mode: bool = False
+    streaming_poll_interval: float = 2.0
+    streaming_max_seconds: int = 60
+    streaming_stability_rounds: int = 2
+
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 from .digger import CategoryDigResult
 from .gcp_utils import auto_configure_threat_fetcher, GCPError
 
@@ -115,7 +131,9 @@ class ThreatEventFetcher:
                  vm_zone: Optional[str] = None,
                  hours_back: float = 3.0,
                  max_entries: int = 5000,
-                 auto_detect: bool = True):
+                 auto_detect: bool = True,
+                 fast_mode: bool = False,
+                 config: Optional[FetcherConfig] = None):
         """
         Initialize the threat event fetcher
         
@@ -131,6 +149,34 @@ class ThreatEventFetcher:
         self.mode = mode
         self.hours_back = hours_back
         self.max_entries = max_entries
+        self.fast_mode = fast_mode
+        cfg = config or FetcherConfig()
+        self.batch_size = cfg.batch_size
+        self.parallel_batches = cfg.parallel_batches
+        self.max_parallel_workers = cfg.max_parallel_workers
+        self.per_batch_timeout = cfg.per_batch_timeout
+        self.retry_attempts = cfg.retry_attempts
+        # internal state & health reporting
+        self._validated_gcloud = False
+        self.health_report = {
+            'categories_skipped_due_to_error': [],
+            'batches_failed': 0,
+            'retries_used': 0,
+            'per_category': {},
+            'late_detection': {
+                'salvage_enabled': cfg.salvage_enabled,
+                'streaming_mode': cfg.streaming_mode,
+                'categories_salvaged': {},
+                'categories_streamed': {}
+            }
+        }
+        # salvage / streaming config
+        self.salvage_enabled = cfg.salvage_enabled
+        self.salvage_wait_seconds = max(0, cfg.salvage_wait_seconds)
+        self.streaming_mode = cfg.streaming_mode
+        self.streaming_poll_interval = max(0.5, cfg.streaming_poll_interval)
+        self.streaming_max_seconds = max(1, cfg.streaming_max_seconds)
+        self.streaming_stability_rounds = max(1, cfg.streaming_stability_rounds)
         
         # Initialize VM metadata parameters
         self.project_id = project_id
@@ -278,7 +324,7 @@ class ThreatEventFetcher:
             threat_events.append(threat_event)
         
         actual_detection_rate = (len(threat_events) / len(domains) * 100) if domains else 0
-        logger.info(f"🧪 Simulated {len(threat_events)} threat events for {category} ({actual_detection_rate:.1f}% detection)")
+        logger.info("🧪 Simulated %d threat events for %s (%.1f%% detection)", len(threat_events), category, actual_detection_rate)
         return threat_events
     
     def _build_domain_filter(self, domains: List[str]) -> str:
@@ -292,6 +338,15 @@ class ThreatEventFetcher:
             domain_conditions.append(f'jsonPayload.threatInfo.threatIndicator="{domain}"')
             domain_conditions.append(f'jsonPayload.threatInfo.threatIndicator="{domain}."')
         
+        # Fast mode trims filter size: omit trailing dot + threatIndicator duplicates (except DNST for indicator)
+        if self.fast_mode:
+            fast_conditions = []
+            for domain in domains:
+                fast_conditions.append(f'jsonPayload.dnsQuery.queryName="{domain}"')
+                # For DNST we still include threatIndicator once
+                if 'dnst' in domain.lower():  # heuristic; domain itself may not reveal DNST, keep minimal
+                    fast_conditions.append(f'jsonPayload.threatInfo.threatIndicator="{domain}"')
+            return " OR ".join(fast_conditions) if fast_conditions else ""
         return " OR ".join(domain_conditions) if domain_conditions else ""
     
     def _build_gcp_log_filter(self, domains: List[str], start_timestamp: str, end_timestamp: str) -> str:
@@ -307,8 +362,24 @@ timestamp<="{end_timestamp}"'''
         
         return log_filter
     
+    def _validate_gcloud_once(self) -> None:
+        """Validate gcloud CLI availability once at initialization time."""
+        if self._validated_gcloud or self.mode != 'gcp':
+            return
+        try:
+            subprocess.run(["gcloud", "version"], capture_output=True, text=True, timeout=30, check=True)
+            self._validated_gcloud = True
+        except Exception as e:
+            logger.error(f"❌ gcloud CLI validation failed: {e}")
+            self._validated_gcloud = False
+
     def _execute_gcloud_command(self, log_filter: str) -> Optional[List[Dict]]:
-        """Execute gcloud logging command and return parsed results"""
+        """Execute gcloud logging command with retries and return parsed results.
+
+        Returns list (possibly empty) or None on definitive failure.
+        Updates health_report retries_used counter.
+        """
+        self._validate_gcloud_once()
         gcloud_command = [
             "gcloud", "logging", "read",
             log_filter,
@@ -316,40 +387,39 @@ timestamp<="{end_timestamp}"'''
             f"--limit={self.max_entries}",
             "--format=json"
         ]
-        
-        try:
-            # Check if gcloud is available
-            subprocess.run(["gcloud", "version"], capture_output=True, text=True, timeout=10, check=True)
-            
-            # Execute the gcloud command
-            result = subprocess.run(
-                gcloud_command,
-                capture_output=True,
-                text=True,
-                timeout=120  # 2 minutes timeout
-            )
-            
-            if result.returncode != 0:
-                logger.error(f"❌ Error querying threat logs: {result.stderr}")
+        attempts = 0
+        backoff_base = 2
+        while attempts < self.retry_attempts:
+            attempts += 1
+            try:
+                result = subprocess.run(
+                    gcloud_command,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.per_batch_timeout
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(result.stderr.strip() or 'non-zero exit')
+                output = result.stdout.strip()
+                if not output:
+                    # No logs for this batch
+                    self.health_report['retries_used'] += (attempts - 1)
+                    return []
+                try:
+                    parsed = json.loads(output)
+                except json.JSONDecodeError as je:
+                    raise RuntimeError(f'JSON parse error: {je}')
+                self.health_report['retries_used'] += (attempts - 1)
+                return parsed
+            except Exception as e:
+                if attempts < self.retry_attempts:
+                    sleep_time = (backoff_base ** (attempts - 1)) + random.uniform(0, 0.5)
+                    logger.warning(f"⏳ Batch attempt {attempts} failed ({e}); retrying in {sleep_time:.1f}s ...")
+                    time.sleep(sleep_time)
+                    continue
+                logger.error(f"💥 Exhausted retries querying threat logs: {e}")
+                self.health_report['retries_used'] += (attempts - 1)
                 return None
-            
-            if not result.stdout.strip():
-                return []
-            
-            return json.loads(result.stdout)
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"❌ Error executing gcloud command: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Error parsing JSON response: {e}")
-            return None
-        except FileNotFoundError:
-            logger.error("❌ gcloud CLI not available for log querying")
-            return None
-        except Exception as e:
-            logger.error(f"💥 Unexpected error querying threat logs: {e}")
-            return None
     
     def _parse_threat_log_entries(self, raw_logs: List[Dict]) -> List[ThreatEvent]:
         """Parse raw GCP log entries into ThreatEvent objects"""
@@ -388,7 +458,8 @@ timestamp<="{end_timestamp}"'''
     
     def _fetch_gcp_threat_logs(self, domains: List[str], category: str,
                               start_time: Optional[datetime] = None,
-                              end_time: Optional[datetime] = None) -> List[ThreatEvent]:
+                              end_time: Optional[datetime] = None,
+                              batch_size: Optional[int] = None) -> List[ThreatEvent]:
         """
         Fetch real threat detection logs from GCP Cloud Logging
         
@@ -404,34 +475,64 @@ timestamp<="{end_timestamp}"'''
         if not domains:
             return []
         
-        # Calculate time range
-        if start_time and end_time:
-            start_timestamp = start_time.strftime(TIMESTAMP_FORMAT)
-            end_timestamp = end_time.strftime(TIMESTAMP_FORMAT)
-        else:
-            end_time_calc = datetime.now(timezone.utc)
-            start_time_calc = end_time_calc - timedelta(hours=self.hours_back)
-            start_timestamp = start_time_calc.strftime(TIMESTAMP_FORMAT)
-            end_timestamp = end_time_calc.strftime(TIMESTAMP_FORMAT)
+        def _calc_time_range() -> Tuple[str, str]:
+            if start_time and end_time:
+                return start_time.strftime(TIMESTAMP_FORMAT), end_time.strftime(TIMESTAMP_FORMAT)
+            end_now = datetime.now(timezone.utc)
+            start_now = end_now - timedelta(hours=self.hours_back)
+            return start_now.strftime(TIMESTAMP_FORMAT), end_now.strftime(TIMESTAMP_FORMAT)
+        start_timestamp, end_timestamp = _calc_time_range()
         
         logger.info(f"🔍 Fetching GCP threat logs for {category}: {len(domains)} domains")
         logger.info(f"⏰ Time range: {start_timestamp} to {end_timestamp}")
         
-        # Build GCP Cloud Logging filter
-        log_filter = self._build_gcp_log_filter(domains, start_timestamp, end_timestamp)
-        logger.debug(f"🔍 GCP log filter: {log_filter}")
-        
-        # Execute gcloud command
-        raw_logs = self._execute_gcloud_command(log_filter)
-        if raw_logs is None:
-            return []
-        
-        if not raw_logs:
+        # Batch domains to avoid excessively long OR filter strings
+        # Ensure batch_size has a concrete int value
+        batch_size = batch_size or self.batch_size or 25
+        all_events: List[ThreatEvent] = []
+        def _build_batches() -> List[Tuple[int, List[str]]]:
+            return [
+                (i // batch_size + 1, domains[i:i+batch_size])
+                for i in range(0, len(domains), batch_size)
+            ]
+        batches = _build_batches()
+
+        def process_batch(batch_info):
+            """Process a single batch; extracted to reduce complexity."""
+            idx, batch_domains = batch_info
+            log_filter_local = self._build_gcp_log_filter(batch_domains, start_timestamp, end_timestamp)
+            logger.debug(f"🔍 GCP log filter batch {idx}: {log_filter_local}")
+            raw_logs_local = self._execute_gcloud_command(log_filter_local)
+            if not raw_logs_local:
+                if raw_logs_local is None:
+                    self.health_report['batches_failed'] += 1
+                return []
+            return self._parse_threat_log_entries(raw_logs_local)
+
+        if self.parallel_batches and len(batches) > 1:
+            try:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                with ThreadPoolExecutor(max_workers=self.max_parallel_workers) as executor:
+                    futures = {executor.submit(process_batch, b): b[0] for b in batches}
+                    for future in as_completed(futures):
+                        try:
+                            events = future.result()
+                            all_events.extend(events)
+                        except Exception as e:
+                            logger.error(f"💥 Parallel batch processing error: {e}")
+                            self.health_report['batches_failed'] += 1
+            except Exception as e:
+                logger.warning(f"⚠️ Falling back to sequential batch processing due to error enabling parallelism: {e}")
+                for b in batches:
+                    all_events.extend(process_batch(b))
+        else:
+            for b in batches:
+                all_events.extend(process_batch(b))
+        if not all_events:
             logger.info(f"ℹ️ No threat logs found for {category}")
             return []
-        
-        logger.info(f"✅ Retrieved {len(raw_logs)} threat log entries for {category}")
-        return self._parse_threat_log_entries(raw_logs)
+        logger.info(f"✅ Retrieved {len(all_events)} threat log entries for {category} (batched)")
+        return all_events
     
     def _extract_unique_domains_from_threats(self, threat_events: List[ThreatEvent]) -> List[str]:
         """
@@ -444,35 +545,143 @@ timestamp<="{end_timestamp}"'''
         Returns:
             List of unique domain names from threats
         """
-        unique_domains = set()
-        
-        for event in threat_events:
+        unique_domains: Set[str] = set()
+
+        def _domain_from_event(ev: ThreatEvent) -> Optional[str]:
             try:
-                # For DNST tunneling, use threatIndicator instead of query_name
-                # because query_name contains the full tunneling domain while
-                # threatIndicator contains the base domain we actually queried
-                if 'DNST' in event.threat_id or 'TI-DNST' in event.threat_id:
-                    if event.raw_entry:
-                        threat_info = event.raw_entry.get('jsonPayload', {}).get('threatInfo', {})
-                        domain = threat_info.get('threatIndicator', event.query_name)
-                    else:
-                        domain = event.query_name
+                if 'DNST' in ev.threat_id or 'TI-DNST' in ev.threat_id:
+                    threat_info = ev.raw_entry.get('jsonPayload', {}).get('threatInfo', {}) if ev.raw_entry else {}
+                    base = threat_info.get('threatIndicator', ev.query_name)
                 else:
-                    # For non-DNST threats, use query_name
-                    domain = event.query_name
-                
-                if domain:
-                    # Remove trailing dot and convert to lowercase for consistency
-                    domain = domain.rstrip('.').lower()
-                    # Skip empty domains and internal/system domains
-                    if domain and not any(excluded in domain for excluded in ['internal', 'local', 'googleapis']):
-                        unique_domains.add(domain)
-                    
+                    base = ev.query_name
+                if not base:
+                    return None
+                base = base.rstrip('.').lower()
+                if any(excluded in base for excluded in ['internal', 'local', 'googleapis']):
+                    return None
+                return base
             except Exception as e:
                 logger.warning(f"Error extracting domain from threat event: {e}")
-                continue
-        
+                return None
+
+        for ev in threat_events:
+            dom = _domain_from_event(ev)
+            if dom:
+                unique_domains.add(dom)
         return sorted(unique_domains)
+
+    # ---- Category threat fetching refactor helpers ----
+    def _prepare_domains_for_threat_search(self, dig_result: CategoryDigResult) -> Tuple[List[str], bool]:
+        is_dnst = 'DNST' in dig_result.category.upper() or 'TUNNELING' in dig_result.category.upper()
+        if is_dnst:
+            unique_domains = list(set(dig_result.successful_domains))
+            logger.info(f"🔗 DNST {dig_result.category}: Deduplicating {len(dig_result.successful_domains)} queries to {len(unique_domains)} unique domains")
+            return unique_domains, True
+        return dig_result.successful_domains, False
+
+    def _initial_threat_fetch(self, domains: List[str], dig_result: CategoryDigResult,
+                              start_time: Optional[datetime], end_time: Optional[datetime]) -> Tuple[List[ThreatEvent], bool, bool, datetime, datetime]:
+        start_fetch = datetime.now(timezone.utc)
+        query_failed = False
+        no_logs_found = False
+        if self.mode == 'simulation':
+            events = self._generate_simulated_threat_events(domains, dig_result.category)
+        else:
+            events = self._fetch_gcp_threat_logs(domains, dig_result.category, start_time, end_time, batch_size=self.batch_size)
+            if not events:
+                query_failed = self.health_report['batches_failed'] > 0
+                no_logs_found = not query_failed
+        end_fetch = datetime.now(timezone.utc)
+        return events, query_failed, no_logs_found, start_fetch, end_fetch
+
+    def _run_salvage(self, threat_events: List[ThreatEvent], domains_for_search: List[str], dig_result: CategoryDigResult,
+                     start_time: Optional[datetime]) -> List[ThreatEvent]:
+        if self.mode != 'gcp' or not self.salvage_enabled:
+            return threat_events
+        initially_detected = {ev.query_name.rstrip('.').lower() for ev in threat_events}
+        undetected = [d for d in domains_for_search if d.lower() not in initially_detected]
+        if not undetected:
+            return threat_events
+        logger.info(f"🛟 Salvage phase for {dig_result.category}: waiting {self.salvage_wait_seconds}s for late ingestion ({len(undetected)} domains)")
+        time.sleep(self.salvage_wait_seconds)
+        salvage_events = self._fetch_gcp_threat_logs(undetected, dig_result.category, start_time, datetime.now(timezone.utc))
+        if not salvage_events:
+            logger.info(f"🛟 Salvage found no additional events for {dig_result.category}")
+            return threat_events
+        existing_ids = {ev.raw_entry.get('insertId') for ev in threat_events if ev.raw_entry}
+        new_events = [ev for ev in salvage_events if ev.raw_entry and ev.raw_entry.get('insertId') not in existing_ids]
+        threat_events.extend(new_events)
+        self.health_report['late_detection']['categories_salvaged'][dig_result.category] = {
+            'added_events': len(new_events),
+            'late_domains_detected': list({ev.query_name.rstrip('.') for ev in new_events})
+        }
+        logger.info(f"🛟 Salvage added {len(new_events)} events for {dig_result.category}")
+        return threat_events
+
+    def _run_streaming(self, threat_events: List[ThreatEvent], domains_for_search: List[str], dig_result: CategoryDigResult,
+                       start_time: Optional[datetime]) -> List[ThreatEvent]:
+        if self.mode != 'gcp' or not self.streaming_mode:
+            return threat_events
+        streaming_start = time.time()
+        stability_counter = 0
+        last_detect_count = len({ev.query_name for ev in threat_events})
+        while (time.time() - streaming_start) < self.streaming_max_seconds:
+            detected_names = {ev.query_name.rstrip('.').lower() for ev in threat_events}
+            remaining = [d for d in domains_for_search if d.lower() not in detected_names]
+            if not remaining:
+                logger.info(f"📡 Streaming phase complete for {dig_result.category}: all domains detected")
+                break
+            logger.debug(f"📡 Streaming poll for {dig_result.category}: {len(remaining)} remaining; sleeping {self.streaming_poll_interval}s")
+            time.sleep(self.streaming_poll_interval)
+            poll_events = self._fetch_gcp_threat_logs(remaining, dig_result.category, start_time, datetime.now(timezone.utc))
+            if poll_events:
+                existing_ids = {ev.raw_entry.get('insertId') for ev in threat_events if ev.raw_entry}
+                new_events = [ev for ev in poll_events if ev.raw_entry and ev.raw_entry.get('insertId') not in existing_ids]
+                if new_events:
+                    threat_events.extend(new_events)
+                    logger.info(f"📡 Streaming added {len(new_events)} events for {dig_result.category}")
+            current_detect_count = len({ev.query_name for ev in threat_events})
+            if current_detect_count == last_detect_count:
+                stability_counter += 1
+            else:
+                stability_counter = 0
+                last_detect_count = current_detect_count
+            if stability_counter >= self.streaming_stability_rounds:
+                logger.info(f"📡 Streaming stability reached for {dig_result.category} (no new detections in {stability_counter} polls)")
+                break
+        self.health_report['late_detection']['categories_streamed'][dig_result.category] = {
+            'final_detected_count': len({ev.query_name for ev in threat_events}),
+            'duration_seconds': round(time.time() - streaming_start, 2)
+        }
+        return threat_events
+
+    def _compute_detection_metrics(self, dig_result: CategoryDigResult, threat_events: List[ThreatEvent], is_dnst: bool) -> Tuple[List[str], List[str], int, int, float]:
+        detected_set: Set[str] = set()
+        for ev in threat_events:
+            if is_dnst and ev.raw_entry:
+                threat_info = ev.raw_entry.get('jsonPayload', {}).get('threatInfo', {})
+                dom = threat_info.get('threatIndicator', ev.query_name)
+            else:
+                dom = ev.query_name
+            detected_set.add(dom.rstrip('.').lower())
+        if is_dnst:
+            unique_queried = {d.lower() for d in dig_result.successful_domains}
+            detected = [d for d in detected_set if d in unique_queried]
+            undetected = [d for d in unique_queried if d not in detected_set]
+            total_unique = len(unique_queried)
+            det_count = len(detected)
+            undet_count = len(undetected)
+            rate = (det_count / total_unique * 100) if total_unique else 0.0
+            logger.info("🔗 DNST Detection Logic for %s: %d threats detected from %d unique domain(s) tested -> %.1f%% detection rate", dig_result.category, det_count, total_unique, rate)
+        else:
+            successful_lower = {d.lower() for d in dig_result.successful_domains}
+            detected = [d for d in detected_set if d in successful_lower]
+            undetected = [d for d in dig_result.successful_domains if d.lower() not in detected_set]
+            total_successful = len(dig_result.successful_domains)
+            det_count = len(detected)
+            undet_count = len(undetected)
+            rate = (det_count / total_successful * 100) if total_successful else 0.0
+        return detected, undetected, det_count, undet_count, rate
     
     def _fetch_category_threats(self, dig_result: CategoryDigResult,
                                start_time: Optional[datetime] = None,
@@ -497,99 +706,84 @@ timestamp<="{end_timestamp}"'''
                 'detected_domains_count': 0,
                 'undetected_domains_count': 0,
                 'detection_rate': 0.0,
-                'threat_events_count': 0
+                'threat_events_count': 0,
+                'fetch_duration_seconds': 0.0,
+                'no_logs_found': True,
+                'query_failed': False
             }
             return threat_result
         
-        # For DNST, deduplicate domains before threat fetching
-        # DNST generates multiple queries to the same domain (tunneling segments)
-        # but we only need to check threats for unique domains
-        is_dnst = 'DNST' in dig_result.category.upper() or 'TUNNELING' in dig_result.category.upper()
-        
-        if is_dnst:
-            # Deduplicate domains for DNST categories
-            unique_domains_for_threat_search = list(set(dig_result.successful_domains))
-            logger.info(f"🔗 DNST {dig_result.category}: Deduplicating {len(dig_result.successful_domains)} queries to {len(unique_domains_for_threat_search)} unique domains")
-            domains_for_threat_search = unique_domains_for_threat_search
-        else:
-            # For non-DNST categories, use all successful domains
-            domains_for_threat_search = dig_result.successful_domains
-        
+        domains_for_threat_search, is_dnst = self._prepare_domains_for_threat_search(dig_result)
         logger.info(f"🔍 Fetching threats for {dig_result.category}: {len(domains_for_threat_search)} domains to search")
-        
-        # Fetch threat events based on mode
-        if self.mode == "simulation":
-            threat_events = self._generate_simulated_threat_events(
-                domains_for_threat_search, 
-                dig_result.category
-            )
-        else:  # GCP mode
-            threat_events = self._fetch_gcp_threat_logs(
-                domains_for_threat_search,
-                dig_result.category,
-                start_time,
-                end_time
-            )
-        
-        # Extract detected domains from threat events
-        detected_domains_set = set()
-        for event in threat_events:
-            # For DNST, use threatIndicator if available, otherwise use query_name
-            if is_dnst and event.raw_entry:
-                threat_info = event.raw_entry.get('jsonPayload', {}).get('threatInfo', {})
-                domain = threat_info.get('threatIndicator', event.query_name)
-            else:
-                domain = event.query_name
-            
-            # Normalize domain for matching
-            domain = domain.rstrip('.').lower()
-            detected_domains_set.add(domain)
-        
-        # Calculate detection metrics with DNST-specific logic like v1
-        if is_dnst:
-            # For DNST: count detection based on unique domains queried vs unique domains detected
-            # This matches v1 logic: detection_rate = threats_found / total_queried_domains
-            unique_queried_domains = {d.lower() for d in dig_result.successful_domains}
-            detected_domains = [d for d in detected_domains_set if d in unique_queried_domains]
-            undetected_domains = [d for d in unique_queried_domains if d not in detected_domains_set]
-            
-            # For DNST, base calculation on unique domains, not individual queries
-            total_unique_domains = len(unique_queried_domains)
-            detected_count = len(detected_domains)
-            undetected_count = len(undetected_domains)
-            detection_rate = (detected_count / total_unique_domains * 100) if total_unique_domains > 0 else 0.0
-            
-            logger.info(f"🔗 DNST Detection Logic for {dig_result.category}: {detected_count} threats detected "
-                       f"from {total_unique_domains} unique domain(s) tested → {detection_rate:.1f}% detection rate")
-        else:
-            # Standard categories: count successful dig queries vs detected domains
-            # This matches v1 logic for non-DNST categories
-            successful_domains_lower = {d.lower() for d in dig_result.successful_domains}
-            detected_domains = [d for d in detected_domains_set if d in successful_domains_lower]
-            undetected_domains = [d for d in dig_result.successful_domains 
-                                 if d.lower() not in detected_domains_set]
-            
-            total_successful = len(dig_result.successful_domains)
-            detected_count = len(detected_domains)
-            undetected_count = len(undetected_domains)
-            detection_rate = (detected_count / total_successful * 100) if total_successful > 0 else 0.0
+
+        threat_events, query_failed, no_logs_found, start_fetch, end_fetch = self._initial_threat_fetch(
+            domains_for_threat_search, dig_result, start_time, end_time
+        )
+        if not query_failed:
+            threat_events = self._run_salvage(threat_events, domains_for_threat_search, dig_result, start_time)
+            threat_events = self._run_streaming(threat_events, domains_for_threat_search, dig_result, start_time)
+
+        # Compute domain-level detection metrics (still returned for distinct threat domain counts)
+        detected_domains, undetected_domains, detected_count, undetected_count, _legacy_rate = self._compute_detection_metrics(
+            dig_result, threat_events, is_dnst
+        )
+        # New unified detection rate: total threat events per successful dig domain (can exceed 100%)
+        successful_dig_total = len(dig_result.successful_domains)
+        detection_rate = (len(threat_events) / successful_dig_total * 100) if successful_dig_total else 0.0
         
         # Update threat result
         threat_result.threat_events = threat_events
         threat_result.detected_domains = detected_domains
         threat_result.undetected_domains = undetected_domains
+        # Populate dns_logs with raw entries (lightweight extraction) for advanced output enrichment
+        try:
+            dns_logs = []
+            for ev in threat_events:
+                dns_entry = {
+                    "timestamp": ev.timestamp,
+                    "query_name": ev.query_name,
+                    "threat_id": ev.threat_id,
+                    "threat_feed": ev.threat_feed
+                }
+                dns_logs.append(dns_entry)
+            setattr(threat_result, 'dns_logs', dns_logs)
+        except Exception as e:
+            logger.debug(f"Failed to populate dns_logs for {dig_result.category}: {e}")
         
         # Calculate summary statistics
         threat_result.threat_summary = {
             'total_successful_domains': len(dig_result.successful_domains),
+            'detected_domains_count': detected_count,  # distinct domains with at least one threat event
+            'undetected_domains_count': undetected_count,
+            'detection_rate': detection_rate,  # events per successful dig domain (% can exceed 100)
+            'detection_rate_legacy_domain_basis': _legacy_rate,  # previous distinct-domain based rate retained for reference
+            'threat_events_count': len(threat_events),
+            'fetch_duration_seconds': (end_fetch - start_fetch).total_seconds(),
+            'no_logs_found': no_logs_found,
+            'query_failed': query_failed,
+            'late_salvage_added': self.health_report['late_detection']['categories_salvaged'].get(dig_result.category, {}).get('added_events', 0),
+            'streaming_final_detected': self.health_report['late_detection']['categories_streamed'].get(dig_result.category, {}).get('final_detected_count', detected_count)
+        }
+
+        # Health per-category enrichment
+        self.health_report['per_category'][dig_result.category] = {
+            'query_failed': query_failed,
+            'no_logs_found': no_logs_found,
+            'threat_events_count': len(threat_events),
             'detected_domains_count': detected_count,
             'undetected_domains_count': undetected_count,
-            'detection_rate': detection_rate,
-            'threat_events_count': len(threat_events)
+            'fetch_duration_seconds': threat_result.threat_summary['fetch_duration_seconds']
         }
         
-        logger.info(f"📊 {dig_result.category} threat detection: "
-                   f"{detected_count}/{len(dig_result.successful_domains)} detected ({detection_rate:.1f}%)")
+        logger.info(
+            "📊 %s threat detection: %d events across %d successful domains -> %.1f%% events/domain (distinct detected domains: %d, legacy rate: %.1f%%)",
+            dig_result.category,
+            len(threat_events),
+            len(dig_result.successful_domains),
+            detection_rate,
+            detected_count,
+            _legacy_rate
+        )
         
         if undetected_count > 0:
             logger.info(f"⚠️ {dig_result.category}: {undetected_count} domains had no threat detection")
@@ -623,6 +817,7 @@ timestamp<="{end_timestamp}"'''
                 logger.error(f"❌ Error processing threats for category {category}: {e}")
                 # Create empty result for failed category
                 results[category] = CategoryThreatResult.from_category_dig_result(dig_result)
+                self.health_report['categories_skipped_due_to_error'].append(category)
         
         # Log overall summary
         total_successful = sum(len(result.successful_domains) for result in results.values())
@@ -643,7 +838,8 @@ def fetch_threats_for_categories(dig_results: Dict[str, CategoryDigResult],
                                hours_back: float = 3.0,
                                start_time: Optional[datetime] = None,
                                end_time: Optional[datetime] = None,
-                               auto_detect: bool = True) -> Dict[str, CategoryThreatResult]:
+                               auto_detect: bool = True,
+                               fast_mode: bool = False) -> Dict[str, CategoryThreatResult]:
     """
     Convenience function to fetch threat events for category dig results
     
@@ -667,10 +863,13 @@ def fetch_threats_for_categories(dig_results: Dict[str, CategoryDigResult],
         vm_instance_id=vm_instance_id,
         vm_zone=vm_zone,
         hours_back=hours_back,
-        auto_detect=auto_detect
+        auto_detect=auto_detect,
+        fast_mode=fast_mode
     )
-    
-    return fetcher.fetch_threats_for_categories(dig_results, start_time, end_time)
+    results = fetcher.fetch_threats_for_categories(dig_results, start_time, end_time)
+    # Attach health_report for callers using wrapper (non-breaking: add attribute to function)
+    setattr(results, 'health_report', fetcher.health_report)  # type: ignore
+    return results
 
 if __name__ == "__main__":
     # Example usage

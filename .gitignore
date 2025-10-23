@@ -72,3 +72,5 @@ bin/
 index.py
 *.gz
 *GUIDE.md
+threat_detection_simulatorv2/.pytest_cache
+threat_detection_simulatorv2/category_output/
